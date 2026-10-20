@@ -4,17 +4,18 @@ import io
 
 import numpy as np
 import soundfile as sf
+import soxr
 import torch
-import torchaudio.functional as AF
 
 
 def read_wav(data: bytes, target_sample_rate: int) -> torch.Tensor:
     """Decode WAV/FLAC bytes into a mono ``[1, T]`` float32 tensor at ``target_sample_rate``."""
     samples, sample_rate = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
-    waveform = torch.from_numpy(samples.mean(axis=1)).unsqueeze(0)
+    mono = samples.mean(axis=1)
     if sample_rate != target_sample_rate:
-        waveform = AF.resample(waveform, sample_rate, target_sample_rate)
-    return waveform
+        # soxr: ~100x faster than torchaudio's sinc resampler on CPU for ratios like 16k -> 44.1k.
+        mono = soxr.resample(mono, sample_rate, target_sample_rate, quality="HQ")
+    return torch.from_numpy(np.ascontiguousarray(mono, dtype=np.float32)).unsqueeze(0)
 
 
 def write_wav(waveform: torch.Tensor, sample_rate: int) -> bytes:

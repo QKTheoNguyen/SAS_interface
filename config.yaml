@@ -9,6 +9,7 @@ gateway:
   host: 127.0.0.1        # 0.0.0.0 exposes the page to the whole network (see README_perso.md)
   port: 8000
   max_input_seconds: 60  # longest source / target clip accepted
+  max_stream_seconds: 300  # a live stream stops automatically after this
 
 workers:
   quickconvert:          # ASR-BN, kNN-VC (torch 2.6)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ import yaml
 from .adapter import ModelAdapter
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_MODELS_DIR = REPO_ROOT / "models"
+DEFAULT_MODELS_DIR = Path(os.environ.get("SAS_MODELS_DIR", REPO_ROOT / "models"))
 
 
 def load_manifests(models_dir: Path = DEFAULT_MODELS_DIR) -> list[dict[str, Any]]:

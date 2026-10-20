@@ -1,4 +1,5 @@
 import { fileToWav, formatSeconds, startRecording } from "./audio.js";
+import { LiveStream } from "./stream.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -15,6 +16,10 @@ const state = {
   targets: [], // [{input, value}]
   params: {},
   choicesCache: {},
+  streamSource: "mic", // "mic" | "file"
+  streamFile: null,
+  stream: null, // active LiveStream
+  statsTimer: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -199,10 +204,16 @@ function renderModelInfo() {
     p.textContent = m.error;
     info.append(p);
   }
-  if (state.mode === "streaming") {
+  if (m.warning) {
+    const p = document.createElement("p");
+    p.className = "warning";
+    p.textContent = m.warning;
+    info.append(p);
+  }
+  if (m.status === "loading" && m.modes.includes("streaming")) {
     const p = document.createElement("p");
     p.className = "notice";
-    p.textContent = "Streaming is not wired up yet (phase 3).";
+    p.textContent = "Loading includes compiling the streaming kernels: ~7 min the first time, ~1 min once cached.";
     info.append(p);
   }
   updateRunButton();
@@ -307,7 +318,7 @@ async function renderSettings({ keepParams = false, preset, apply } = {}) {
   if (!keepParams) state.params = {};
   if (!m) return;
   const spec = m.tasks[state.task];
-  const params = spec.params || [];
+  const params = (spec.params || []).filter((p) => !p.modes || p.modes.includes(state.mode));
   const presets = spec.presets || [];
   const presetName = preset ?? presets.find((p) => p.default)?.name ?? presets[0]?.name;
   Object.assign(state.params, apply ?? (keepParams ? {} : presets.find((p) => p.name === presetName)?.values));
@@ -370,16 +381,120 @@ function updateRunButton() {
   const spec = m?.tasks[state.task];
   const needsTarget = spec?.target_voice === "required";
   const hasTarget = state.targets.some((t) => t.input.value);
+  const streaming = state.mode === "streaming";
+  $("source-input").hidden = streaming;
+  $("stream-source").hidden = !streaming;
+  $("stream-file-row").hidden = state.streamSource !== "file";
+  $("run").textContent = state.stream ? "■ Stop streaming" : streaming ? "● Start streaming" : "Run";
+  $("run").classList.toggle("recording", !!state.stream);
+  if (state.stream) {
+    $("run").disabled = state.stream.stopping;
+    return;
+  }
   const blockers = [];
   if (!m || m.status !== "ready") blockers.push(`model is ${m?.status ?? "missing"}`);
-  if (state.mode === "streaming") blockers.push("streaming is not available yet");
-  if (!state.source) blockers.push("add source speech");
+  if (!streaming && !state.source) blockers.push("add source speech");
+  if (streaming && state.streamSource === "file" && !state.streamFile) blockers.push("choose a file");
   if (needsTarget && !hasTarget) blockers.push("add a target voice clip");
   $("run").disabled = blockers.length > 0;
   $("run").title = blockers.join(", ");
 }
 
+function showResult({ original, output, model, meta }) {
+  const url = URL.createObjectURL(output);
+  $("original-audio").src = URL.createObjectURL(original);
+  $("result-audio").src = url;
+  $("download").href = url;
+  $("download").download = `${model.name}_${state.task}_${state.mode}_${new Date().toISOString().replace(/[:.]/g, "-")}.wav`;
+  $("result-meta").textContent = meta;
+  $("result-card").hidden = false;
+  $("result-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// ---------------------------------------------------------------------------
+// Streaming
+// ---------------------------------------------------------------------------
+
+function renderLatency(stats) {
+  const ms = (v) => `${Math.round(v)} ms`;
+  const items = [
+    ["End-to-end (estimate)", ms(stats.totalMs), "total"],
+    ["Model delay", ms(stats.algorithmicMs)],
+    ["Chunk capture", ms(stats.chunkMs)],
+    ["Round trip", ms(stats.roundTripMs)],
+    ["Compute / chunk", `${stats.computeMs.toFixed(1)} ms`],
+    ["RTF", stats.rtf.toFixed(2), stats.rtf > 1 ? "bad" : ""],
+    ["Playback buffer", ms(stats.bufferMs)],
+    ["Audio device", ms(stats.deviceMs)],
+    ["Underruns", String(stats.underruns), stats.underruns ? "bad" : ""],
+    ["Streamed", formatSeconds(stats.sentSeconds)],
+  ];
+  $("latency-stats").replaceChildren(
+    ...items.map(([label, value, cls]) => {
+      const div = document.createElement("div");
+      const dt = Object.assign(document.createElement("dt"), { textContent: label });
+      const dd = Object.assign(document.createElement("dd"), { textContent: value, className: cls || "" });
+      div.append(dt, dd);
+      return div;
+    }),
+  );
+  $("latency-card").hidden = false;
+}
+
+async function startStream() {
+  const m = selectedModel();
+  const status = $("run-status");
+  status.className = "status";
+  status.textContent = "Connecting…";
+  const stream = new LiveStream({
+    model: m.name,
+    task: state.task,
+    params: state.params,
+    targets: state.targets.filter((t) => t.input.value).map((t) => t.input.value.blob),
+    file: state.streamSource === "file" ? state.streamFile : null,
+    monitor: $("stream-monitor").checked,
+    maxSeconds: state.config.max_stream_seconds,
+    onEnd: (result) => endStream(m, result),
+  });
+  state.stream = stream;
+  updateRunButton();
+  try {
+    await stream.start();
+    status.textContent = stream.opts.file ? `Streaming ${stream.opts.file.name}…` : "Streaming from the microphone…";
+    state.statsTimer = setInterval(() => renderLatency(stream.stats), 250);
+  } catch (err) {
+    stream.finish(err);
+  }
+  updateRunButton();
+}
+
+function stopStream() {
+  state.stream?.stop();
+  $("run-status").textContent = "Stopping (flushing the model's delay)…";
+  updateRunButton();
+}
+
+function endStream(model, result) {
+  clearInterval(state.statsTimer);
+  state.stream = null;
+  const status = $("run-status");
+  status.className = result.error ? "status error" : "status";
+  status.textContent = result.error ? result.error.message : "";
+  if (result.stats) {
+    renderLatency(result.stats);
+    const s = result.stats;
+    showResult({
+      original: result.input,
+      output: result.output,
+      model,
+      meta: `${model.label} · streamed ${formatSeconds(s.sentSeconds)} · end-to-end ≈ ${Math.round(s.totalMs)} ms · RTF ${s.rtf.toFixed(2)}`,
+    });
+  }
+  updateRunButton();
+}
+
 async function run() {
+  if (state.mode === "streaming") return state.stream ? stopStream() : startStream();
   const m = selectedModel();
   const status = $("run-status");
   const form = new FormData();
@@ -395,17 +510,14 @@ async function run() {
   try {
     const res = await fetch(`/api/models/${m.name}/convert`, { method: "POST", body: form });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `${res.status} ${res.statusText}`);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    $("original-audio").src = URL.createObjectURL(state.source.blob);
-    $("result-audio").src = url;
-    $("download").href = url;
-    $("download").download = `${m.name}_${state.task}_${new Date().toISOString().replace(/[:.]/g, "-")}.wav`;
     const compute = res.headers.get("X-Compute-Seconds");
-    $("result-meta").textContent = `${m.label} · model time ${compute ? formatSeconds(+compute) : "?"} · total ${formatSeconds((performance.now() - started) / 1000)}`;
-    $("result-card").hidden = false;
+    showResult({
+      original: state.source.blob,
+      output: await res.blob(),
+      model: m,
+      meta: `${m.label} · model time ${compute ? formatSeconds(+compute) : "?"} · total ${formatSeconds((performance.now() - started) / 1000)}`,
+    });
     status.textContent = "";
-    $("result-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (err) {
     status.className = "status error";
     status.textContent = err.message;
@@ -420,6 +532,8 @@ async function run() {
 // ---------------------------------------------------------------------------
 
 async function onSelectionChange() {
+  state.stream?.stop();
+  $("latency-card").hidden = true;
   renderModels();
   state.targets = [];
   renderTargets();
@@ -454,6 +568,15 @@ async function init() {
   $("model-select").addEventListener("change", (e) => ((state.modelName = e.target.value), onSelectionChange()));
   $("add-target").addEventListener("click", addTarget);
   $("run").addEventListener("click", run);
+  document.querySelectorAll("input[name=stream-source]").forEach((el) =>
+    el.addEventListener("change", () => ((state.streamSource = el.value), updateRunButton())),
+  );
+  $("stream-file-button").addEventListener("click", () => $("stream-file").click());
+  $("stream-file").addEventListener("change", () => {
+    state.streamFile = $("stream-file").files[0] || null;
+    $("stream-file-name").textContent = state.streamFile?.name || "No file chosen";
+    updateRunButton();
+  });
 
   await refreshModels();
   // Poll so "loading" models flip to "ready" without a page reload.

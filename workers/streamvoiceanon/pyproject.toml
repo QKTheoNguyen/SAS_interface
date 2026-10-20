@@ -22,6 +22,8 @@ dependencies = [
     "matplotlib",
     "packaging",
     "tqdm",
+    # triton 3.0 (torch.compile backend) imports setuptools at runtime; uv venvs do not ship it.
+    "setuptools",
 ]
 
 [tool.uv]

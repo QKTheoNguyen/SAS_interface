@@ -6,6 +6,6 @@ adapters over HTTP. Each model lives in ``models/<name>/`` with a
 (imported only by the worker named in the manifest).
 """
 
-from .adapter import ModelAdapter
+from .adapter import ModelAdapter, StreamSession
 
-__all__ = ["ModelAdapter"]
+__all__ = ["ModelAdapter", "StreamSession"]

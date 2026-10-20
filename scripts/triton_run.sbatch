@@ -22,6 +22,19 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 
+# Triton GPU nodes have no system C compiler, which torch.compile (Triton kernels) needs.
+if ! command -v gcc >/dev/null 2>&1; then
+  set +u
+  type module >/dev/null 2>&1 || source /etc/profile >/dev/null 2>&1
+  module load triton/2024.1-gcc gcc/12.3.0 >/dev/null 2>&1 || echo "warning: could not load a gcc module" >&2
+  set -u
+fi
+export CC="${CC:-$(command -v gcc || true)}"
+# Keep torch.compile / Triton kernel caches on /scratch so later jobs skip most of the compile time
+# (the default is the node-local /tmp, wiped between jobs).
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/scratch/work/$USER/.cache/torchinductor}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/scratch/work/$USER/.cache/triton}"
+
 NODE=$(hostname -s)
 PORT=$(uv run --project gateway python -c "from sas_gateway.config import load_config; print(load_config().port)")
 cat <<EOF

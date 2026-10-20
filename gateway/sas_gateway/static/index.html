@@ -39,6 +39,21 @@
         <section class="card">
           <h2><span class="step">4</span> Source speech</h2>
           <div id="source-input"></div>
+          <div id="stream-source" hidden>
+            <div class="segmented">
+              <label><input type="radio" name="stream-source" value="mic" checked /> Microphone (live)</label>
+              <label><input type="radio" name="stream-source" value="file" /> File (played in real time)</label>
+            </div>
+            <p class="row" id="stream-file-row" hidden>
+              <button type="button" class="secondary" id="stream-file-button">Choose file</button>
+              <span class="muted" id="stream-file-name">No file chosen</span>
+              <input type="file" id="stream-file" accept="audio/*" hidden />
+            </p>
+            <p class="row">
+              <label><input type="checkbox" id="stream-monitor" checked /> Play output live</label>
+              <span class="muted">Use headphones with the microphone, or the output feeds back into it.</span>
+            </p>
+          </div>
         </section>
 
         <section class="card" id="params-card" hidden>
@@ -60,6 +75,15 @@
         <section class="card">
           <button type="button" id="run" class="primary">Run</button>
           <p id="run-status" class="status" role="status"></p>
+        </section>
+
+        <section class="card" id="latency-card" hidden>
+          <h2>Latency</h2>
+          <dl class="stats" id="latency-stats"></dl>
+          <p class="help muted">
+            End-to-end = chunk capture + round trip + playback buffer + model delay + audio device.
+            RTF = compute time / chunk duration; above 1 the model cannot keep up and latency grows.
+          </p>
         </section>
 
         <section class="card" id="result-card" hidden>

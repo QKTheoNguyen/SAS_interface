@@ -17,8 +17,9 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 8000
     max_input_seconds: float = 60.0
+    max_stream_seconds: float = 300.0
     workers: dict[str, str] = field(default_factory=dict)  # name -> base URL
-    models_dir: Path = REPO_ROOT / "models"
+    models_dir: Path = Path(os.environ.get("SAS_MODELS_DIR", REPO_ROOT / "models"))
 
     def local_workers(self) -> list[tuple[str, str, int]]:
         """(name, host, port) of workers that run.sh must start on this machine."""
@@ -40,6 +41,7 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         host=os.environ.get("SAS_HOST", gateway.get("host", "127.0.0.1")),
         port=int(os.environ.get("SAS_PORT", gateway.get("port", 8000))),
         max_input_seconds=float(gateway.get("max_input_seconds", 60)),
+        max_stream_seconds=float(gateway.get("max_stream_seconds", 300)),
         workers=workers,
     )
 

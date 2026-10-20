@@ -10,9 +10,11 @@ from typing import Any
 
 import httpx
 import soundfile as sf
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from websockets.asyncio.client import connect as ws_connect
+from websockets.exceptions import WebSocketException
 
 from .config import Config, load_config, load_manifests
 
@@ -63,7 +65,7 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
 
     @app.get("/api/config")
     def get_config() -> dict:
-        return {"max_input_seconds": config.max_input_seconds}
+        return {"max_input_seconds": config.max_input_seconds, "max_stream_seconds": config.max_stream_seconds}
 
     @app.get("/api/models")
     async def list_models() -> list[dict]:
@@ -78,7 +80,13 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
                 status, error = "error", f"Worker {manifest['worker']!r} does not serve this model"
             else:
                 status, error = state["status"], state.get("error")
-            out.append({**manifest, "status": status, "error": error, "device": (health or {}).get("device")})
+            out.append({
+                **manifest,
+                "status": status,
+                "error": error,
+                "warning": (state or {}).get("warning"),
+                "device": (health or {}).get("device"),
+            })
         return out
 
     @app.get("/api/models/{name}/choices/{param}")
@@ -135,6 +143,48 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         except httpx.HTTPError as exc:
             raise HTTPException(502, f"Worker unreachable: {exc}") from exc
         return await forward(r)
+
+    @app.websocket("/api/models/{name}/stream")
+    async def stream(ws: WebSocket, name: str) -> None:
+        """Relay frames both ways between the browser and the worker (protocol in sas_worker/server.py)."""
+        await ws.accept()
+        manifest = manifests.get(name)
+        if manifest is None or "streaming" not in manifest["modes"]:
+            await ws.send_json({"type": "error", "detail": f"Model {name!r} does not support streaming"})
+            await ws.close()
+            return
+        url = config.workers[manifest["worker"]].replace("http", "ws", 1) + f"/models/{name}/stream"
+        try:
+            async with ws_connect(url, max_size=None, ping_interval=None) as upstream:
+
+                async def browser_to_worker() -> None:
+                    while True:
+                        message = await ws.receive()
+                        if message["type"] == "websocket.disconnect":
+                            return
+                        await upstream.send(message["bytes"] if message.get("bytes") is not None else message["text"])
+
+                async def worker_to_browser() -> None:
+                    async for message in upstream:
+                        if isinstance(message, bytes):
+                            await ws.send_bytes(message)
+                        else:
+                            await ws.send_text(message)
+
+                tasks = [asyncio.create_task(browser_to_worker()), asyncio.create_task(worker_to_browser())]
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in tasks:
+                    task.cancel()
+        except (OSError, WebSocketException) as exc:
+            try:
+                await ws.send_json({"type": "error", "detail": f"Worker unreachable: {exc}"})
+            except Exception:
+                pass
+        finally:
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

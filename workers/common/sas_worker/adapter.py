@@ -15,6 +15,7 @@ class ModelAdapter(ABC):
     """
 
     sample_rate: int = 16000
+    warning: str | None = None  # shown in the UI, e.g. a degraded mode
 
     def __init__(self, manifest: dict[str, Any]):
         self.manifest = manifest
@@ -49,3 +50,25 @@ class ModelAdapter(ABC):
         params: dict[str, Any],
     ) -> torch.Tensor:
         """Run one non-streaming conversion and return a ``[T]`` or ``[1, T]`` waveform."""
+
+    def open_stream(self, task: str, targets: list[torch.Tensor], params: dict[str, Any]) -> StreamSession:
+        """Start a streaming session. Only models listing ``streaming`` in their manifest ``modes`` implement this."""
+        raise NotImplementedError(f"{self.name} does not support streaming")
+
+
+class StreamSession(ABC):
+    """One live conversion. The worker calls :meth:`process` with consecutive
+    ``[1, chunk_samples]`` chunks at :attr:`input_sample_rate`, always from the
+    same thread, and :meth:`close` once at the end."""
+
+    input_sample_rate: int
+    output_sample_rate: int
+    chunk_samples: int
+    algorithmic_latency_ms: float  # delay the model adds on top of chunking and transport
+
+    @abstractmethod
+    def process(self, chunk: torch.Tensor) -> torch.Tensor:
+        """Convert one chunk and return the output samples produced for it."""
+
+    def close(self) -> None:
+        pass

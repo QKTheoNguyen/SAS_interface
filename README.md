@@ -8,8 +8,8 @@ You pick a task and a mode, record or upload some speech, adjust the model's set
 | Task | Model | Non-streaming | Streaming | Worker |
 |---|---|---|---|---|
 | Anonymization | ASR-BN (SA-toolkit, via [quick-convert](https://github.com/benluks/quick-convert)) | ✅ | — | `quickconvert` |
-| Anonymization | [StreamVoiceAnon](https://github.com/Plachtaa/StreamVoiceAnon) | ✅ | phase 3 | `streamvoiceanon` (CUDA only) |
-| Voice conversion | StreamVoiceAnon | ✅ | phase 3 | `streamvoiceanon` (CUDA only) |
+| Anonymization | [StreamVoiceAnon](https://github.com/Plachtaa/StreamVoiceAnon) | ✅ | ✅ | `streamvoiceanon` (CUDA only) |
+| Voice conversion | StreamVoiceAnon | ✅ | ✅ | `streamvoiceanon` (CUDA only) |
 | Voice conversion | [kNN-VC](https://github.com/bshall/knn-vc) | ✅ | — | `quickconvert` |
 
 For anonymization, StreamVoiceAnon picks from a bundled pool of 10 LibriSpeech `train-clean-360` pseudo-speakers
@@ -96,8 +96,24 @@ The browser converts every recording and upload to mono WAV before sending it, s
 | GET | `/health` | Device and per-model status (`pending`, `loading`, `ready`, `error`) |
 | GET | `/models/{name}/choices/{param}` | Values for a `choices_from: worker` parameter |
 | POST | `/models/{name}/convert` | Multipart: `task`, `params` (JSON), `source` (WAV), `targets` (WAV, repeatable). Returns WAV; header `X-Compute-Seconds` |
+| WebSocket | `/models/{name}/stream` | Live conversion, see below |
 
 The gateway exposes the same routes under `/api/models/...`, plus `/api/models` (manifests and status) and `/api/config`.
+
+### Streaming protocol
+
+1. Client sends text `{"type": "start", "task", "params", "n_targets"}`, then `n_targets` binary messages (WAV/FLAC files).
+2. Worker replies text `{"type": "ready", "sample_rate", "output_sample_rate", "chunk_samples", "algorithmic_latency_ms"}`.
+3. Client sends binary frames: `uint32 seq` + float32 PCM at `sample_rate` (little-endian). The worker cuts them into `chunk_samples` chunks.
+4. For each chunk the worker sends binary: `uint32 seq` (last input frame consumed) + `float32 compute_ms` + float32 PCM at `output_sample_rate`.
+5. Client sends text `{"type": "stop"}`; the worker answers `{"type": "end"}` after the last chunk and closes. Errors arrive as `{"type": "error", "detail"}`.
+
+While a stream is open, that model refuses other requests (503), because streaming state lives in the model.
+All model calls of a worker run on one thread, so compiled CUDA graphs are replayed from the thread that recorded them.
+
+To make a model streamable, list `streaming` in its manifest `modes` and implement `open_stream()` returning a
+`sas_worker.StreamSession` (`process(chunk)` per chunk, `close()` at the end). Parameters can be limited to one mode
+with `modes: [streaming]` in their manifest entry.
 
 ## License
 

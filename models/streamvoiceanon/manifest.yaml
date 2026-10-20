@@ -11,7 +11,7 @@ links:
   - label: Paper
     url: https://arxiv.org/abs/2601.13948
 worker: streamvoiceanon
-modes: [non-streaming]   # streaming added in phase 3
+modes: [non-streaming, streaming]
 
 tasks:
   anonymization:
@@ -56,6 +56,15 @@ tasks:
         max: 8
         default: 2
         advanced: true
+      - name: block_frames
+        label: Chunk size (frames, 1 frame ≈ 46 ms)
+        type: int
+        min: 1
+        max: 4
+        default: 1
+        advanced: true
+        modes: [streaming]   # shown only in streaming mode
+        help: Audio sent to the model per step. Larger chunks lower GPU load but add latency.
       - name: max_reference_seconds
         label: Reference length used (s)
         type: float
@@ -64,7 +73,7 @@ tasks:
         step: 1
         default: 10
         advanced: true
-        help: Longer references take more of the model's context, which limits the source length.
+        help: Longer references take more of the model's context, which limits the source length (non-streaming).
 
   voice_conversion:
     target_voice: required
@@ -76,6 +85,15 @@ tasks:
         max: 8
         default: 2
         advanced: true
+      - name: block_frames
+        label: Chunk size (frames, 1 frame ≈ 46 ms)
+        type: int
+        min: 1
+        max: 4
+        default: 1
+        advanced: true
+        modes: [streaming]   # shown only in streaming mode
+        help: Audio sent to the model per step. Larger chunks lower GPU load but add latency.
       - name: max_reference_seconds
         label: Target length used (s)
         type: float
@@ -84,4 +102,4 @@ tasks:
         step: 1
         default: 10
         advanced: true
-        help: Longer targets take more of the model's context, which limits the source length.
+        help: Longer targets take more of the model's context, which limits the source length (non-streaming).
