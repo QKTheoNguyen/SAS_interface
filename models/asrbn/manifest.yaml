@@ -1,0 +1,25 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: asrbn
+label: ASR-BN (SA-toolkit)
+description: >-
+  ASR bottleneck features + F0 resynthesised by HiFi-GAN with a one-hot target
+  speaker. Loaded through quick-convert's ASRBNAnonymizer.
+links:
+  - label: quick-convert
+    url: https://github.com/benluks/quick-convert
+  - label: SA-toolkit
+    url: https://github.com/deep-privacy/SA-toolkit
+worker: quickconvert
+modes: [non-streaming]
+
+tasks:
+  anonymization:
+    target_voice: none   # none | optional | required
+    params:
+      - name: target_speaker
+        label: Target speaker
+        type: choice
+        choices_from: worker   # list fetched from the loaded model
+        extra_choices: [random]
+        default: random
+        help: Pseudo-speaker the output is converted to. "random" picks a new one for each run.

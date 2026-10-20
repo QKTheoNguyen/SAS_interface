@@ -1,0 +1,29 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: knnvc
+label: kNN-VC
+description: >-
+  Replaces each WavLM frame of the source with the average of its k nearest
+  frames from the target speaker, then vocodes with a prematched HiFi-GAN.
+  Quality grows with the amount of target audio (the paper uses ~5 min).
+links:
+  - label: kNN-VC
+    url: https://github.com/bshall/knn-vc
+  - label: quick-convert
+    url: https://github.com/benluks/quick-convert
+worker: quickconvert
+modes: [non-streaming]
+
+tasks:
+  voice_conversion:
+    target_voice: required
+    target_voice_help: Add several clips of the same speaker; more audio gives a better match.
+    min_total_target_seconds: 30
+    params:
+      - name: topk
+        label: k (nearest neighbours)
+        type: int
+        min: 1
+        max: 16
+        default: 4
+        advanced: true
+        help: Number of matched target frames averaged per source frame.

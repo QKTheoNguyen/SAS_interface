@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.egg-info/
+logs/*
+!logs/.gitkeep
+uv.lock.bak
+README_perso.md
+.vscode/
+.claude/

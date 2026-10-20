@@ -1,0 +1,111 @@
+# SAS Interface
+
+A local web app for trying out speaker anonymization (SAS) and voice conversion (VC) models.
+You pick a task and a mode, record or upload some speech, adjust the model's settings, and get back audio you can play or download.
+
+## Models
+
+| Task | Model | Non-streaming | Streaming | Worker |
+|---|---|---|---|---|
+| Anonymization | ASR-BN (SA-toolkit, via [quick-convert](https://github.com/benluks/quick-convert)) | ✅ | — | `quickconvert` |
+| Anonymization | [StreamVoiceAnon](https://github.com/Plachtaa/StreamVoiceAnon) | ✅ | phase 3 | `streamvoiceanon` (CUDA only) |
+| Voice conversion | StreamVoiceAnon | ✅ | phase 3 | `streamvoiceanon` (CUDA only) |
+| Voice conversion | [kNN-VC](https://github.com/bshall/knn-vc) | ✅ | — | `quickconvert` |
+
+For anonymization, StreamVoiceAnon picks from a bundled pool of 10 LibriSpeech `train-clean-360` pseudo-speakers
+([models/streamvoiceanon/references/](models/streamvoiceanon/references/README.md)) unless you upload your own reference.
+Its context holds about 45 s of source and reference audio combined.
+
+## Quick start
+
+You need [uv](https://docs.astral.sh/uv/) and git. A CUDA GPU is recommended. CPU works, just slowly.
+
+```bash
+git clone --recursive <this repo> SAS_interface
+cd SAS_interface
+./setup.sh      # environments + checkpoints (~5 GB per worker)
+./run.sh        # then open http://localhost:8000
+```
+
+Browsers only allow the microphone on `http://localhost` or HTTPS, so open the page there if you want to record.
+If the app runs on a remote machine, forward the port with `ssh -L 8000:localhost:8000 <host>`.
+
+## Checking an install
+
+While `./run.sh` is up, run `uv run --project gateway python scripts/smoke_test.py`. It converts a bundled clip with
+every model and task, using the manifest defaults, and writes the outputs to `logs/smoke/`.
+
+## Architecture
+
+```
+browser ──HTTP──▶ gateway (FastAPI, serves the UI) ──HTTP──▶ worker "quickconvert"    (torch 2.6: ASR-BN, kNN-VC)
+                                                    └──────▶ worker "streamvoiceanon" (torch 2.4: StreamVoiceAnon)
+```
+
+The gateway (`gateway/`) serves the plain HTML/JS UI and routes requests to workers. It has no ML dependencies.
+
+Each worker (`workers/<name>/`) is its own process with its own `uv` environment, covering a group of models.
+They're split up because the model repos pin incompatible PyTorch versions. Code shared between workers lives in `workers/common/`.
+
+Each model (`models/<name>/`) has a `manifest.yaml` that describes it and an `adapter.py` that runs it. The UI is built from the manifests.
+
+`config.yaml` lists which workers are enabled and where they listen. If a worker URL points to another host, such as a GPU node,
+the gateway uses it as is and doesn't start that worker locally.
+
+The browser converts every recording and upload to mono WAV before sending it, so the server doesn't need ffmpeg.
+
+## Adding a model
+
+1. Create `models/<name>/manifest.yaml`:
+
+   ```yaml
+   name: mymodel
+   label: My model
+   worker: quickconvert          # which worker environment runs it
+   modes: [non-streaming]
+   tasks:
+     anonymization:
+       target_voice: none        # none | optional | required
+       presets:                  # optional; fills params when picked in the UI
+         - name: Strong
+           values: {strength: 0.9}
+           default: true
+       params:
+         - name: strength
+           label: Strength
+           type: float           # choice | float | int | bool
+           min: 0
+           max: 1
+           default: 0.5
+           advanced: false       # true puts it under "Advanced"
+   ```
+
+   A `choice` parameter takes either a fixed `choices: [...]` list or `choices_from: worker`, which gets the options from the adapter's `choices()` method.
+
+2. Create `models/<name>/adapter.py` with a class named `Adapter` that subclasses `sas_worker.ModelAdapter` and implements `load(device)` and `convert(task, source, targets, params)`.
+   Audio comes in as a mono `[1, T]` float tensor at the adapter's `sample_rate`. See [`models/asrbn/adapter.py`](models/asrbn/adapter.py).
+
+3. If the model needs a new environment, add `workers/<worker>/pyproject.toml` (see [`workers/quickconvert/`](workers/quickconvert/pyproject.toml)) and a URL for it in `config.yaml`.
+
+4. Run `./setup.sh` again so it downloads the new checkpoints.
+
+## Worker API
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Device and per-model status (`pending`, `loading`, `ready`, `error`) |
+| GET | `/models/{name}/choices/{param}` | Values for a `choices_from: worker` parameter |
+| POST | `/models/{name}/convert` | Multipart: `task`, `params` (JSON), `source` (WAV), `targets` (WAV, repeatable). Returns WAV; header `X-Compute-Seconds` |
+
+The gateway exposes the same routes under `/api/models/...`, plus `/api/models` (manifests and status) and `/api/config`.
+
+## License
+
+The code in this repository is released under the [MIT License](LICENSE).
+
+Third-party parts keep their own licenses:
+
+- `third_party/StreamVoiceAnon`: Apache 2.0 (git submodule, not redistributed here).
+- `third_party/quick-convert`: see that repository (git submodule, not redistributed here).
+- Model checkpoints are downloaded from their authors at setup time and follow their licenses.
+- `models/streamvoiceanon/references/*.flac`: excerpts of LibriSpeech, CC BY 4.0 ([attribution](models/streamvoiceanon/references/README.md)).

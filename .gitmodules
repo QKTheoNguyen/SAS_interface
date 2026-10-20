@@ -1,0 +1,7 @@
+[submodule "third_party/quick-convert"]
+	path = third_party/quick-convert
+	url = https://github.com/benluks/quick-convert
+[submodule "third_party/StreamVoiceAnon"]
+	path = third_party/StreamVoiceAnon
+	url = https://github.com/Plachtaa/StreamVoiceAnon
+	ignore = untracked

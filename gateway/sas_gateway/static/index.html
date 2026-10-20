@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAS Interface</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>SAS Interface</h1>
+        <p class="muted">Speaker anonymization and voice conversion test bench.</p>
+      </header>
+
+      <section class="card">
+        <h2><span class="step">1</span> Task</h2>
+        <div class="segmented" id="task">
+          <label><input type="radio" name="task" value="anonymization" checked /> Anonymization</label>
+          <label><input type="radio" name="task" value="voice_conversion" /> Voice conversion</label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2><span class="step">2</span> Mode</h2>
+        <div class="segmented" id="mode">
+          <label><input type="radio" name="mode" value="non-streaming" checked /> Non-streaming</label>
+          <label><input type="radio" name="mode" value="streaming" /> Streaming</label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2><span class="step">3</span> Model</h2>
+        <select id="model-select" hidden></select>
+        <div id="model-info"></div>
+      </section>
+
+      <div id="model-dependent" hidden>
+        <section class="card">
+          <h2><span class="step">4</span> Source speech</h2>
+          <div id="source-input"></div>
+        </section>
+
+        <section class="card" id="params-card" hidden>
+          <h2><span class="step">5</span> Settings</h2>
+          <div id="params"></div>
+          <details id="advanced" hidden>
+            <summary>Advanced</summary>
+            <div id="advanced-params"></div>
+          </details>
+        </section>
+
+        <section class="card" id="target-card" hidden>
+          <h2><span class="step">5</span> <span id="target-title">Target voice</span> <span class="muted" id="target-required"></span></h2>
+          <p class="help muted" id="target-help"></p>
+          <div id="targets"></div>
+          <button type="button" class="secondary" id="add-target">+ Add clip</button>
+        </section>
+
+        <section class="card">
+          <button type="button" id="run" class="primary">Run</button>
+          <p id="run-status" class="status" role="status"></p>
+        </section>
+
+        <section class="card" id="result-card" hidden>
+          <h2><span class="step">6</span> Result</h2>
+          <div class="players">
+            <figure>
+              <figcaption>Original</figcaption>
+              <audio id="original-audio" controls></audio>
+            </figure>
+            <figure>
+              <figcaption>Output</figcaption>
+              <audio id="result-audio" controls></audio>
+            </figure>
+          </div>
+          <p class="row">
+            <a id="download" class="button secondary" download>Download WAV</a>
+            <span id="result-meta" class="muted"></span>
+          </p>
+        </section>
+      </div>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

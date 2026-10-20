@@ -1,0 +1,31 @@
+[project]
+name = "sas-worker-streamvoiceanon"
+version = "0.1.0"
+description = "Worker environment for StreamVoiceAnon (pins torch 2.4)"
+requires-python = ">=3.10,<3.12"
+# Inference subset of third_party/StreamVoiceAnon/requirements.txt (GUI and training deps left out).
+dependencies = [
+    "sas-worker",
+    "torch==2.4.0",
+    "torchaudio==2.4.0",
+    "numpy==1.26.4",
+    "scipy==1.13.1",
+    "librosa==0.10.2",
+    "einops==0.8.0",
+    "einx",
+    "hydra-core==1.3.2",
+    "omegaconf",
+    "pyyaml",
+    "transformers==4.46.3",
+    "vector-quantize-pytorch==1.14.24",
+    "huggingface-hub>=0.28.1",
+    "matplotlib",
+    "packaging",
+    "tqdm",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+sas-worker = { path = "../common", editable = true }

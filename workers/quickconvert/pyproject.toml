@@ -1,0 +1,21 @@
+[project]
+name = "sas-worker-quickconvert"
+version = "0.1.0"
+description = "Worker environment for models implemented in quick-convert (ASRBN, kNN-VC)"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "quick-convert",
+    "sas-worker",
+    # Runtime deps of SA-toolkit, which ASRBN loads through torch.hub.
+    "scipy",
+    "pandas",
+    "kaldiio",
+    "requests",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+quick-convert = { path = "../../third_party/quick-convert", editable = true }
+sas-worker = { path = "../common", editable = true }

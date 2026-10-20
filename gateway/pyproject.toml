@@ -1,0 +1,23 @@
+[project]
+name = "sas-gateway"
+version = "0.1.0"
+description = "Web gateway for SAS_interface: serves the UI and routes requests to model workers"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "pyyaml>=6.0",
+    "soundfile>=0.12",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sas_gateway*"]
+
+[tool.setuptools.package-data]
+sas_gateway = ["static/*"]

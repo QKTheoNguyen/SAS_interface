@@ -1,0 +1,87 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: streamvoiceanon
+label: StreamVoiceAnon
+description: >-
+  Autoregressive voice conversion on neural codec tokens, conditioned on a
+  reference voice. Anonymization mixes noise into the reference speaker
+  embeddings (alpha); voice conversion uses the target voice as-is.
+links:
+  - label: GitHub
+    url: https://github.com/Plachtaa/StreamVoiceAnon
+  - label: Paper
+    url: https://arxiv.org/abs/2601.13948
+worker: streamvoiceanon
+modes: [non-streaming]   # streaming added in phase 3
+
+tasks:
+  anonymization:
+    target_voice: optional
+    target_voice_label: Own reference voice
+    target_voice_help: >-
+      Optional. Upload your own reference clips to replace the pseudo-speaker above.
+    presets:   # from third_party/StreamVoiceAnon/configs/presets.json
+      - name: Max Privacy
+        description: Strongest anonymization. Full noise mixing.
+        values: {alpha: 0.0, delay: 2}
+      - name: Balanced
+        description: Mid-point between privacy and voice fidelity.
+        values: {alpha: 0.5, delay: 2}
+        default: true
+      - name: Max Quality
+        description: No noise mixing. Keeps the reference voice at the highest quality.
+        values: {alpha: 1.0, delay: 4}
+      - name: Low Latency
+        description: Fastest response. Minimal decoder delay.
+        values: {alpha: 0.7, delay: 1}
+    params:
+      - name: reference_speaker
+        label: Pseudo-speaker
+        type: choice
+        choices_from: worker
+        extra_choices: [random]
+        default: random
+        help: Reference voice from the bundled LibriSpeech train-clean-360 pool. "random" picks a new one for each run.
+      - name: alpha
+        label: Alpha (speaker embedding noise mixing)
+        type: float
+        min: 0
+        max: 1
+        step: 0.05
+        default: 0.5
+        help: 0 = pure noise (most private), 1 = no noise (plain conversion to the reference).
+      - name: delay
+        label: Decoder delay (frames, 1 frame ≈ 46 ms)
+        type: int
+        min: 0
+        max: 8
+        default: 2
+        advanced: true
+      - name: max_reference_seconds
+        label: Reference length used (s)
+        type: float
+        min: 3
+        max: 20
+        step: 1
+        default: 10
+        advanced: true
+        help: Longer references take more of the model's context, which limits the source length.
+
+  voice_conversion:
+    target_voice: required
+    params:
+      - name: delay
+        label: Decoder delay (frames, 1 frame ≈ 46 ms)
+        type: int
+        min: 0
+        max: 8
+        default: 2
+        advanced: true
+      - name: max_reference_seconds
+        label: Target length used (s)
+        type: float
+        min: 3
+        max: 20
+        step: 1
+        default: 10
+        advanced: true
+        help: Longer targets take more of the model's context, which limits the source length.

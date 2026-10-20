@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sas-worker"
+version = "0.1.0"
+description = "Shared HTTP server and adapter contract for SAS_interface model workers"
+requires-python = ">=3.10"
+# torch / torchaudio are provided by each worker's environment, pinned by its model repo.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+    "pyyaml>=6.0",
+    "soundfile>=0.12",
+    "numpy",
+]
+
+[tool.setuptools.packages.find]
+include = ["sas_worker*"]
