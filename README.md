@@ -19,6 +19,7 @@ Its context holds about 45 s of source and reference audio combined.
 ## Quick start
 
 You need [uv](https://docs.astral.sh/uv/) and git. A CUDA GPU is recommended. CPU works, just slowly.
+StreamVoiceAnon uses `torch.compile`, so you also need a C compiler (`gcc`) on your `PATH`.
 
 ```bash
 git clone --recursive <this repo> SAS_interface
@@ -29,6 +30,12 @@ cd SAS_interface
 
 Browsers only allow the microphone on `http://localhost` or HTTPS, so open the page there if you want to record.
 If the app runs on a remote machine, forward the port with `ssh -L 8000:localhost:8000 <host>`.
+
+## Running on a Slurm cluster
+
+If your GPU is on a cluster node, submit [scripts/run.sbatch](scripts/run.sbatch) instead of running `./run.sh` yourself.
+Set the partition in the script first. Depending on the cluster, you may also need to set `GCC_MODULES`, `CACHE_ROOT`
+and `LOGIN_HOST`. The job log prints the SSH command that opens a tunnel to the UI.
 
 ## Metrics (anonymization)
 

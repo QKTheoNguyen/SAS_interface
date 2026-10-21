@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+# Aalto Triton cluster only — adapt partitions/modules for other Slurm clusters.
 # Run the interface on a Triton GPU node. Submit from the repo root:
 #   sbatch scripts/triton_run.sbatch
 # Then follow the tunnel instructions printed in logs/sas-interface-<jobid>.out.

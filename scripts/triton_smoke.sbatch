@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+
+# Aalto Triton cluster only — adapt partitions/modules for other Slurm clusters.
 # Start everything on a GPU node, run scripts/smoke_test.py, then exit.
 #   sbatch scripts/triton_smoke.sbatch
 # Results: logs/sas-smoke-<jobid>.out and logs/smoke/*.wav
