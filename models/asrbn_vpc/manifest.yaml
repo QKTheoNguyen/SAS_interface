@@ -1,0 +1,39 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: asrbn_vpc
+label: ASR-BN (VPC)
+description: >-
+  VoicePrivacy Challenge 2026 baselines B5/B6: vector-quantized ASR bottleneck
+  features + YAAPT F0, resynthesised by HiFi-GAN with a one-hot target speaker.
+  Same SA-toolkit models as ASR-BN (quick-convert), run as in the VPC recipe and
+  with a choice of checkpoint.
+links:
+  - label: VPC 2026
+    url: https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026
+  - label: SA-toolkit
+    url: https://github.com/deep-privacy/SA-toolkit
+  - label: Paper
+    url: https://arxiv.org/abs/2308.04455
+worker: vpc
+modes: [non-streaming]
+
+tasks:
+  anonymization:
+    target_voice: none
+    params:
+      - name: variant
+        label: Checkpoint
+        type: choice
+        choices: [B5, B6, wav2vec2 (no VQ), TDNN-F (no VQ)]
+        default: B5
+        help: >-
+          B5 = wav2vec2 bottleneck + VQ-48, B6 = TDNN-F (600 h) + VQ-48. The no-VQ checkpoints keep
+          more of the source speaker. Each checkpoint loads on first use.
+      - name: target_speaker
+        label: Target speaker
+        type: choice
+        choices_from: worker
+        extra_choices: [random]
+        default: random
+        help: >-
+          LibriTTS pseudo-speaker. "random" picks one per run (the VPC random_per_utt setting);
+          the VPC constant setting uses 6081.

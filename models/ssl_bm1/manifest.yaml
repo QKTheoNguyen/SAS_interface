@@ -1,0 +1,53 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: ssl_bm1
+label: SSL speaker pool (VPC BM1)
+description: >-
+  VoicePrivacy Challenge 2026 baseline BM1 (track 2, multilingual): soft-HuBERT
+  content + YAAPT F0 + a pseudo-speaker averaged from ECAPA x-vectors selected in
+  a LibriTTS pool, resynthesised by HiFi-GAN.
+links:
+  - label: VPC 2026
+    url: https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026
+  - label: Paper
+    url: https://arxiv.org/abs/2203.14834
+worker: vpc
+modes: [non-streaming]
+
+tasks:
+  anonymization:
+    target_voice: none
+    params:
+      - name: proximity
+        label: Pool selection
+        type: choice
+        choices: [random, farthest, nearest]
+        default: random
+        help: >-
+          How the "world" of candidate pool speakers is chosen relative to the source
+          speaker's x-vector. "nearest" keeps the voice closer to the source.
+      - name: world_size
+        label: World size
+        type: int
+        min: 1
+        max: 200
+        default: 50
+        help: Number of pool speakers considered.
+      - name: region_size
+        label: Region size
+        type: int
+        min: 1
+        max: 200
+        default: 10
+        help: Number of speakers, out of the world, whose x-vectors are averaged into the pseudo-speaker.
+      - name: gender_pool
+        label: Same-gender pool
+        type: bool
+        default: false
+        advanced: true
+        help: Detect the source gender (extra wav2vec2 classifier, loaded on first use) and select from that gender only.
+      - name: cross_gender
+        label: Cross-gender
+        type: bool
+        default: false
+        advanced: true
+        help: With "Same-gender pool", select from the other gender instead.

@@ -1,0 +1,52 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: mcadams
+label: McAdams (VPC B2)
+description: >-
+  VoicePrivacy Challenge baseline B2: signal processing only. Shifts the angles of
+  the LPC poles by a McAdams coefficient, which moves the formants. Runs on CPU.
+links:
+  - label: VPC 2026
+    url: https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026
+  - label: Paper
+    url: https://arxiv.org/abs/2011.01130
+worker: vpc
+modes: [non-streaming]
+
+tasks:
+  anonymization:
+    target_voice: none
+    params:
+      - name: random_coefficient
+        label: Random coefficient
+        type: bool
+        default: true
+        help: Draw the coefficient uniformly from 0.5–0.9 for each run, as in the VPC recipe.
+      - name: coefficient
+        label: McAdams coefficient
+        type: float
+        min: 0.5
+        max: 1.0
+        step: 0.01
+        default: 0.8
+        help: Used when "Random coefficient" is off. 1.0 leaves the voice unchanged; lower values shift it further.
+      - name: lp_order
+        label: LPC order
+        type: int
+        min: 8
+        max: 40
+        default: 20
+        advanced: true
+      - name: window_ms
+        label: Window (ms)
+        type: int
+        min: 10
+        max: 50
+        default: 20
+        advanced: true
+      - name: shift_ms
+        label: Shift (ms)
+        type: int
+        min: 5
+        max: 25
+        default: 10
+        advanced: true

@@ -1,0 +1,38 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: nac
+label: NAC / Bark (VPC B4)
+description: >-
+  VoicePrivacy Challenge 2026 baseline B4: HuBERT semantic tokens of the source are
+  regenerated as EnCodec acoustic tokens by Bark's coarse and fine language models,
+  prompted with a target voice. Slow (several seconds of GPU time per second of
+  speech) and not deterministic.
+links:
+  - label: VPC 2026
+    url: https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026
+  - label: Paper
+    url: https://arxiv.org/abs/2309.14129
+worker: vpc
+modes: [non-streaming]
+
+tasks:
+  anonymization:
+    target_voice: none
+    params:
+      - name: target_voice
+        label: Target voice
+        type: choice
+        choices_from: worker
+        extra_choices: [random, unprompted]
+        default: random
+        help: >-
+          Bark voice prompt (the VPC speaker mappings use these). "random" picks one per run;
+          "unprompted" lets Bark choose a voice freely.
+      - name: coarse_temperature
+        label: Coarse temperature
+        type: float
+        min: 0.1
+        max: 1.0
+        step: 0.05
+        default: 0.7
+        advanced: true
+        help: Sampling temperature of the coarse acoustic model. Higher is more varied but noisier.

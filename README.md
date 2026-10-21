@@ -7,7 +7,11 @@ You pick a task and a mode, record or upload some speech, adjust the model's set
 
 | Task | Model | Non-streaming | Streaming | Worker |
 |---|---|---|---|---|
-| Anonymization | ASR-BN (SA-toolkit, via [quick-convert](https://github.com/benluks/quick-convert)) | ✅ | — | `quickconvert` |
+| Anonymization | ASR-BN (quick-convert): SA-toolkit, via [quick-convert](https://github.com/benluks/quick-convert) | ✅ | — | `quickconvert` |
+| Anonymization | ASR-BN (VPC): B5/B6 and the no-VQ checkpoints, as in the [VPC 2026](https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026) recipe | ✅ | — | `vpc` |
+| Anonymization | McAdams (VPC B2), CPU only | ✅ | — | `vpc` |
+| Anonymization | SSL speaker pool (VPC BM1) | ✅ | — | `vpc` |
+| Anonymization | NAC / Bark (VPC B4), slow | ✅ | — | `vpc` |
 | Anonymization | [StreamVoiceAnon](https://github.com/Plachtaa/StreamVoiceAnon) | ✅ | ✅ | `streamvoiceanon` (CUDA only) |
 | Voice conversion | StreamVoiceAnon | ✅ | ✅ | `streamvoiceanon` (CUDA only) |
 | Voice conversion | [kNN-VC](https://github.com/bshall/knn-vc) | ✅ | — | `quickconvert` |
@@ -50,6 +54,7 @@ The `metrics` worker discovers these classes from quick-convert at start-up, so 
 there appear in the dropdowns automatically. A model whose quick-convert extra is not installed is listed as
 unavailable with the missing package; add the extra to [`workers/metrics/pyproject.toml`](workers/metrics/pyproject.toml).
 Installing that environment builds `pyworld` (an ESPnet dependency), which needs a C++ compiler.
+The `vpc` environment also needs one, to build `fairseq`.
 
 ## Checking an install
 
@@ -61,6 +66,7 @@ every model and task, using the manifest defaults, and writes the outputs to `lo
 ```
 browser ──HTTP──▶ gateway (FastAPI, serves the UI) ──HTTP──▶ worker "quickconvert"    (torch 2.6: ASR-BN, kNN-VC)
                                                     ├──────▶ worker "streamvoiceanon" (torch 2.4: StreamVoiceAnon)
+                                                    ├──────▶ worker "vpc"             (torch 2.8: VoicePrivacy Challenge 2026 baselines)
                                                     └──────▶ worker "metrics"         (speaker encoders + SER)
 ```
 
@@ -145,5 +151,9 @@ Third-party parts keep their own licenses:
 
 - `third_party/StreamVoiceAnon`: Apache 2.0 (git submodule, not redistributed here).
 - `third_party/quick-convert`: see that repository (git submodule, not redistributed here).
+- `third_party/Voice-Privacy-Challenge-2026`: GPL-3.0 (git submodule, not redistributed here).
+  The adapters that import its code (`models/mcadams/`, `models/ssl_bm1/`, `models/nac/`) are therefore
+  GPL-3.0-or-later, as marked in their headers; everything else stays MIT. Disable the `vpc` worker in
+  `config.yaml` to run without any GPL code.
 - Model checkpoints are downloaded from their authors at setup time and follow their licenses.
 - `models/streamvoiceanon/references/*.flac`: excerpts of LibriSpeech, CC BY 4.0 ([attribution](models/streamvoiceanon/references/README.md)).

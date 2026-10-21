@@ -1,6 +1,6 @@
 # Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
 name: asrbn
-label: ASR-BN (SA-toolkit)
+label: ASR-BN (quick-convert)
 description: >-
   ASR bottleneck features + F0 resynthesised by HiFi-GAN with a one-hot target
   speaker. Loaded through quick-convert's ASRBNAnonymizer.

@@ -22,7 +22,7 @@ WORKERS=$(uv run --project gateway python -m sas_gateway local-workers | awk '{p
 for worker in $WORKERS; do
   echo "==> Worker environment: $worker"
   uv sync --project "workers/$worker" || {
-    echo "Failed to install workers/$worker. If a package failed to build (e.g. pyworld for the metrics worker)," >&2
+    echo "Failed to install workers/$worker. If a package failed to build (e.g. pyworld for metrics, fairseq for vpc)," >&2
     echo "make a C/C++ compiler available first. On Triton: module load triton/2024.1-gcc gcc/12.3.0" >&2
     exit 1
   }

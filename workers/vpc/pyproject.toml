@@ -1,0 +1,39 @@
+[project]
+name = "sas-worker-vpc"
+version = "0.1.0"
+description = "Worker environment for the VoicePrivacy Challenge 2026 baselines (pins torch 2.8)"
+requires-python = ">=3.11,<3.12"
+# Inference subset of third_party/Voice-Privacy-Challenge-2026/requirements.txt and of the
+# asrbn, ssl and nac pipeline requirements (evaluation and training deps left out).
+dependencies = [
+    "sas-worker",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "numpy<2",
+    "scipy",
+    "librosa",
+    "soundfile",
+    "pandas",
+    "kaldiio",
+    "hyperpyyaml",   # imported by the VPC `utils` package
+    "packaging",
+    "requests",
+    # ASR-BN: runtime deps of SA-toolkit, which loads through torch.hub.
+    "configargparse",
+    # SSL (BM1)
+    "fairseq @ git+https://github.com/One-sixth/fairseq.git",
+    "speechbrain==1.0.3",
+    "transformers>=4.40.2,<5",
+    "resampy",
+    "amfm-decompy",
+    # NAC (B4): the coqui TTS fork that VPC installs for Bark.
+    "TTS @ git+https://github.com/m-pana/nac-requirements.git",
+    "encodec",
+    "huggingface-hub>=0.34.0,<1.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+sas-worker = { path = "../common", editable = true }

@@ -5,3 +5,7 @@
 	path = third_party/StreamVoiceAnon
 	url = https://github.com/Plachtaa/StreamVoiceAnon
 	ignore = untracked
+[submodule "third_party/Voice-Privacy-Challenge-2026"]
+	path = third_party/Voice-Privacy-Challenge-2026
+	url = https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026
+	ignore = untracked
