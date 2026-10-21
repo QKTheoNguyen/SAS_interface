@@ -18,7 +18,7 @@ tasks:
     target_voice: optional
     target_voice_label: Own reference voice
     target_voice_help: >-
-      Optional. Upload your own reference clips to replace the pseudo-speaker above.
+      Record or upload your own reference clips to replace the pseudo-speaker.
     presets:   # from third_party/StreamVoiceAnon/configs/presets.json
       - name: Max Privacy
         description: Strongest anonymization. Full noise mixing.

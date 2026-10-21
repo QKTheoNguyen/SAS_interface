@@ -31,6 +31,9 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute must win over component display rules (e.g. .row { display: flex }). */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -69,15 +72,24 @@ h2 { margin: 0 0 12px; font-size: 1.05rem; display: flex; align-items: center; g
 
 .muted { color: var(--muted); font-weight: normal; }
 
-.segmented { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Radio groups rendered as full-width buttons. */
+.segmented { display: flex; gap: 8px; }
 .segmented label {
+  flex: 1;
+  text-align: center;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 8px 14px;
+  padding: 10px 14px;
   cursor: pointer;
+  background: var(--surface);
+  font-weight: 600;
+  user-select: none;
 }
-.segmented label:has(input:checked) { border-color: var(--accent); outline: 1px solid var(--accent); }
-.segmented input { margin: 0 6px 0 0; }
+.segmented label:hover { border-color: var(--accent); }
+.segmented label:has(input:checked) { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.segmented label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.segmented input { position: absolute; opacity: 0; pointer-events: none; }
+@media (max-width: 480px) { .segmented { flex-direction: column; } }
 
 select, input[type="number"], input[type="text"] {
   font: inherit;
@@ -105,13 +117,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.recording { border-color: var(--danger); color: var(--danger); }
 
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0 0; }
+.row .push-right { margin-left: auto; }
+.clip .segmented { margin-bottom: 4px; }
 
 .badge { font-size: 0.8rem; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
 .badge.ready { color: var(--ok); }
 .badge.loading, .badge.pending { color: var(--warn); }
 .badge.offline, .badge.error { color: var(--danger); }
 
-.status { margin: 10px 0 0; min-height: 1.5em; }
+.status { margin: 10px 0 0; }
+.status:empty { display: none; }
 .status.error { color: var(--danger); }
 .notice { color: var(--muted); font-style: italic; }
 .warning { color: var(--warn); }
@@ -124,11 +139,16 @@ button.recording { border-color: var(--danger); color: var(--danger); }
 .param .range input[type="number"] { width: 90px; }
 
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0; }
-.stats div { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.stats > div { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .stats dt { font-size: 0.8rem; color: var(--muted); }
 .stats dd { margin: 2px 0 0; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
 .stats dd.bad { color: var(--danger); }
 .stats dd.total { font-weight: 700; }
+.stats .sub { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+.stats .headline { font-size: 1.2rem; font-weight: 700; margin-bottom: 6px; }
+#metrics-panel { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+#metrics-panel select { width: 100%; }
+#metrics-results { margin-top: 10px; }
 
 details summary { cursor: pointer; color: var(--muted); margin: 4px 0 8px; }
 

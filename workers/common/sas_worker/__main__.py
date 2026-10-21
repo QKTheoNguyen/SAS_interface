@@ -2,6 +2,9 @@
 
     python -m sas_worker serve    --worker quickconvert --port 8101
     python -m sas_worker prefetch --worker quickconvert
+
+The worker named ``metrics`` is special: it serves the metrics panel
+(sas_worker/metrics.py) instead of models from models/*/manifest.yaml.
 """
 
 from __future__ import annotations
@@ -14,11 +17,13 @@ import torch
 
 from .registry import DEFAULT_MODELS_DIR, adapters_for_worker
 
+METRICS_WORKER = "metrics"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sas_worker")
     parser.add_argument("command", choices=["serve", "prefetch"])
-    parser.add_argument("--worker", required=True, help="Worker name, as in manifest.yaml `worker:`")
+    parser.add_argument("--worker", required=True, help="Worker name, as in manifest.yaml `worker:` (or `metrics`)")
     parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8101)
@@ -26,6 +31,19 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format=f"%(asctime)s [{args.worker}] %(levelname)s %(message)s")
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+
+    if args.worker == METRICS_WORKER:
+        from . import metrics
+
+        if args.command == "prefetch":
+            metrics.prefetch()
+            return
+        import uvicorn
+
+        uvicorn.run(metrics.create_metrics_app(device), host=args.host, port=args.port)
+        return
+
     adapters = adapters_for_worker(args.worker, args.models_dir)
     if not adapters:
         raise SystemExit(f"No model in {args.models_dir} declares `worker: {args.worker}`")
@@ -40,7 +58,6 @@ def main() -> None:
 
     from .server import create_app
 
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     uvicorn.run(create_app(args.worker, adapters, device), host=args.host, port=args.port)
 
 

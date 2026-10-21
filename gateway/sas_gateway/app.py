@@ -19,6 +19,7 @@ from websockets.exceptions import WebSocketException
 from .config import Config, load_config, load_manifests
 
 STATIC_DIR = Path(__file__).parent / "static"
+METRICS_WORKER = "metrics"  # serves /metrics/* instead of models (workers/common/sas_worker/metrics.py)
 # Conversions of a 60 s clip on a slow GPU (or CPU) can take minutes.
 CONVERT_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 
@@ -65,7 +66,11 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
 
     @app.get("/api/config")
     def get_config() -> dict:
-        return {"max_input_seconds": config.max_input_seconds, "max_stream_seconds": config.max_stream_seconds}
+        return {
+            "max_input_seconds": config.max_input_seconds,
+            "max_stream_seconds": config.max_stream_seconds,
+            "metrics": METRICS_WORKER in config.workers,
+        }
 
     @app.get("/api/models")
     async def list_models() -> list[dict]:
@@ -142,6 +147,42 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
             )
         except httpx.HTTPError as exc:
             raise HTTPException(502, f"Worker unreachable: {exc}") from exc
+        return await forward(r)
+
+    def metrics_url() -> str:
+        if METRICS_WORKER not in config.workers:
+            raise HTTPException(404, "No metrics worker configured (add `metrics` under `workers` in config.yaml)")
+        return config.workers[METRICS_WORKER]
+
+    @app.get("/api/metrics/options")
+    async def metrics_options() -> Response:
+        try:
+            r = await client.get(f"{metrics_url()}/metrics/options", timeout=5.0)
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
+        return await forward(r)
+
+    @app.post("/api/metrics/compute")
+    async def metrics_compute(
+        source: UploadFile = File(...),
+        output: UploadFile = File(...),
+        speaker_encoder: str = Form(""),
+        ser_model: str = Form(""),
+    ) -> Response:
+        url = metrics_url()
+        files = [
+            ("source", ("source.wav", await source.read(), "audio/wav")),
+            ("output", ("output.wav", await output.read(), "audio/wav")),
+        ]
+        try:
+            r = await client.post(
+                f"{url}/metrics/compute",
+                data={"speaker_encoder": speaker_encoder, "ser_model": ser_model},
+                files=files,
+                timeout=CONVERT_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
         return await forward(r)
 
     @app.websocket("/api/models/{name}/stream")

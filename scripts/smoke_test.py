@@ -158,7 +158,49 @@ def main() -> None:
                     f"OK   {label} model {float(r.headers.get('x-compute-seconds', 'nan')):6.2f} s, "
                     f"total {time.time() - start:6.2f} s, output {info.duration:5.1f} s @ {info.samplerate} Hz -> {path.relative_to(REPO_ROOT)}"
                 )
+        failures += check_metrics(client, out_dir, args.load_timeout)
     sys.exit(1 if failures else 0)
+
+
+def check_metrics(client: httpx.Client, out_dir: Path, timeout: float) -> int:
+    """Identity check (source vs itself) plus every anonymization output, with every ready model."""
+    if not client.get("/api/config").json().get("metrics"):
+        return 0
+    deadline = time.time() + timeout
+    while True:
+        options = client.get("/api/metrics/options").json()
+        models = options["speaker_encoders"] + options["ser_models"]
+        if not any(m["status"] in ("pending", "loading") for m in models) or time.time() > deadline:
+            break
+        print("waiting for metric models", flush=True)
+        time.sleep(5)
+    for m in models:
+        if m["status"] != "ready":
+            print(f"note metrics: {m['id']} {m['status']}: {m['error']}")
+
+    failures = 0
+    encoders = [m["id"] for m in options["speaker_encoders"] if m["status"] == "ready"]
+    ser = next((m["id"] for m in options["ser_models"] if m["status"] == "ready"), "")
+    outputs = [SOURCE] + sorted(out_dir.glob("*_anonymization*.wav"))
+    for output in outputs:
+        for encoder in encoders:
+            files = {"source": SOURCE.read_bytes(), "output": output.read_bytes()}
+            r = client.post("/api/metrics/compute", data={"speaker_encoder": encoder, "ser_model": ser}, files=files)
+            name = "identity (source vs source)" if output == SOURCE else output.name
+            if r.is_error:
+                print(f"FAIL metrics {encoder:32} {name}: HTTP {r.status_code} {r.text[:200]}")
+                failures += 1
+                continue
+            res = r.json()
+            cos, med = res["speaker_similarity"]["value"], res.get("emotion_distance", {}).get("value", float("nan"))
+            emo = res.get("emotion_distance", {})
+            bad = output == SOURCE and (cos < 0.99 or med > 1e-3)
+            print(
+                f"{'FAIL' if bad else 'OK  '} metrics {encoder:32} cos {cos:6.3f}  MED {med:5.3f} "
+                f"({emo.get('source_emotion')} -> {emo.get('output_emotion')})  {name}"
+            )
+            failures += bad
+    return failures
 
 
 if __name__ == "__main__":

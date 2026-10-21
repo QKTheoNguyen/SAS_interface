@@ -19,6 +19,8 @@ const state = {
   streamSource: "mic", // "mic" | "file"
   streamFile: null,
   stream: null, // active LiveStream
+  lastResult: null, // {original, output, task} of the result shown, for metrics
+  metricsPoll: null,
   statsTimer: null,
 };
 
@@ -26,12 +28,21 @@ const state = {
 // Audio input widget: record or upload one clip.
 // ---------------------------------------------------------------------------
 
+let audioInputCount = 0;
+
+/**
+ * Record or upload one clip. Like the streaming source, a full-width toggle picks
+ * the method ("Record" / "Upload file") and only that method's control is shown.
+ */
 function createAudioInput({ onChange, onRemove } = {}) {
   const root = document.createElement("div");
   root.className = "clip";
+  const radioName = `clip-source-${++audioInputCount}`;
   const fileInput = Object.assign(document.createElement("input"), { type: "file", accept: "audio/*", hidden: true });
+  let method = "record"; // "record" | "upload"
   let value = null;
   let recorder = null;
+  let stopping = false;
   let timer = null;
   let message = "";
 
@@ -65,9 +76,12 @@ function createAudioInput({ onChange, onRemove } = {}) {
 
   async function toggleRecording() {
     if (recorder) {
+      if (stopping) return;
+      stopping = true;
       clearInterval(timer);
       const clip = await recorder.stop();
       recorder = null;
+      stopping = false;
       accept({ ...clip, name: "recording" });
       return;
     }
@@ -92,22 +106,47 @@ function createAudioInput({ onChange, onRemove } = {}) {
     return b;
   }
 
+  function methodToggle() {
+    const group = document.createElement("div");
+    group.className = "segmented";
+    for (const [id, label] of [["record", "Record"], ["upload", "Upload file"]]) {
+      const input = Object.assign(document.createElement("input"), {
+        type: "radio", name: radioName, value: id, checked: method === id, disabled: !!recorder,
+      });
+      input.addEventListener("change", () => {
+        method = id;
+        render();
+      });
+      const lab = document.createElement("label");
+      lab.append(input, label);
+      group.append(lab);
+    }
+    return group;
+  }
+
   function render() {
-    root.replaceChildren(fileInput);
+    root.replaceChildren(fileInput, methodToggle());
     const row = document.createElement("div");
     row.className = "row";
     if (recorder) {
       row.append(button(`■ Stop (${formatSeconds(recorder.elapsed())})`, toggleRecording, "recording"));
       if (recorder.elapsed() > state.config.max_input_seconds) toggleRecording();
+    } else if (method === "record") {
+      row.append(button(value ? "● Record again" : "● Start recording", toggleRecording));
     } else {
-      row.append(button(value ? "● Re-record" : "● Record", toggleRecording));
-      row.append(button(value ? "Replace file" : "Upload file", () => fileInput.click()));
-      if (onRemove) row.append(button("Remove", onRemove));
-      if (value) {
-        const meta = document.createElement("span");
-        meta.className = "muted";
-        meta.textContent = `${value.name} · ${formatSeconds(value.duration)}`;
-        row.append(meta);
+      row.append(button(value ? "Choose another file" : "Choose file", () => fileInput.click()));
+    }
+    if (!recorder) {
+      const meta = document.createElement("span");
+      meta.className = "muted";
+      meta.textContent = value
+        ? `${value.name} · ${formatSeconds(value.duration)}`
+        : method === "upload" ? "No file chosen" : "";
+      if (meta.textContent) row.append(meta);
+      if (onRemove) {
+        const remove = button("Remove clip", onRemove);
+        remove.classList.add("push-right");
+        row.append(remove);
       }
     }
     root.append(row);
@@ -164,6 +203,7 @@ function renderModels() {
     return;
   }
   $("model-dependent").hidden = false;
+  renumberSteps();
   renderModelInfo();
 }
 
@@ -301,7 +341,9 @@ function renderPresetSelect(presets, current) {
   select.add(new Option("Custom", "", false, !current));
   const help = document.createElement("div");
   help.className = "help";
-  const describe = () => (help.textContent = selectedPreset()?.description || "Values edited by hand.");
+  // Read the option from this select: it is not in the page yet on first render.
+  const describe = () =>
+    (help.textContent = presets.find((p) => p.name === select.value)?.description || "Values edited by hand.");
   select.addEventListener("change", () => {
     const preset = selectedPreset();
     if (preset) renderSettings({ keepParams: true, preset: preset.name, apply: preset.values });
@@ -336,8 +378,17 @@ async function renderSettings({ keepParams = false, preset, apply } = {}) {
   $("target-required").textContent = targetVoice === "required" ? "(required)" : "(optional)";
   $("target-title").textContent = spec.target_voice_label || "Target voice";
   $("target-help").textContent = spec.target_voice_help || "";
-  $("target-card").querySelector(".step").textContent = params.length ? "6" : "5";
-  if (targetVoice === "required" && !state.targets.length) addTarget();
+  // Show an empty clip right away (record or upload), also when the voice is optional.
+  if (targetVoice !== "none" && !state.targets.length) addTarget();
+  renumberSteps();
+}
+
+/** Number the visible cards 1, 2, 3… in page order. */
+function renumberSteps() {
+  let n = 0;
+  for (const step of document.querySelectorAll(".step")) {
+    if (!step.closest("[hidden]")) step.textContent = String(++n);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +438,7 @@ function updateRunButton() {
   $("stream-file-row").hidden = state.streamSource !== "file";
   $("run").textContent = state.stream ? "■ Stop streaming" : streaming ? "● Start streaming" : "Run";
   $("run").classList.toggle("recording", !!state.stream);
+  updateMetricsButton();
   if (state.stream) {
     $("run").disabled = state.stream.stopping;
     return;
@@ -408,7 +460,103 @@ function showResult({ original, output, model, meta }) {
   $("download").download = `${model.name}_${state.task}_${state.mode}_${new Date().toISOString().replace(/[:.]/g, "-")}.wav`;
   $("result-meta").textContent = meta;
   $("result-card").hidden = false;
+  state.lastResult = { original, output, task: state.task };
+  $("metrics-results").replaceChildren();
+  $("metrics-status").textContent = "";
+  $("metrics-panel").hidden = !(state.config.metrics && state.task === "anonymization");
+  updateMetricsButton();
+  renumberSteps();
   $("result-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// ---------------------------------------------------------------------------
+// Metrics (anonymization only)
+// ---------------------------------------------------------------------------
+
+function fillMetricSelect(select, models) {
+  const previous = select.value;
+  const options = [new Option("None (skip)", "")];
+  for (const m of models) {
+    const suffix = m.status === "ready" ? "" : m.status === "unavailable" ? " (unavailable)" : " (loading…)";
+    const option = new Option(m.label + suffix, m.id);
+    option.disabled = m.status !== "ready";
+    if (m.error) option.title = m.error;
+    options.push(option);
+  }
+  select.replaceChildren(...options);
+  const ready = models.filter((m) => m.status === "ready");
+  const pick = ready.find((m) => m.id === previous) || ready.find((m) => m.default) || ready[0];
+  select.value = previous === "" && select.dataset.touched ? "" : pick?.id ?? "";
+}
+
+async function refreshMetricOptions() {
+  try {
+    const options = await fetchJson("/api/metrics/options");
+    fillMetricSelect($("metric-speaker"), options.speaker_encoders);
+    fillMetricSelect($("metric-ser"), options.ser_models);
+    const pending = [...options.speaker_encoders, ...options.ser_models].some((m) => ["pending", "loading"].includes(m.status));
+    clearTimeout(state.metricsPoll);
+    if (pending && $("metrics-panel").open) state.metricsPoll = setTimeout(refreshMetricOptions, 3000);
+  } catch (err) {
+    $("metrics-status").className = "status error";
+    $("metrics-status").textContent = err.message;
+  }
+  updateMetricsButton();
+}
+
+function updateMetricsButton() {
+  const chosen = $("metric-speaker").value || $("metric-ser").value;
+  // Metrics need a finished result: a live stream must be stopped first.
+  $("compute-metrics").disabled = !state.lastResult || !!state.stream || !chosen;
+  $("compute-metrics").title = state.stream ? "Stop the stream first" : chosen ? "" : "Pick at least one model";
+}
+
+function metricTile(label, value, sub, headline) {
+  const div = document.createElement("div");
+  if (headline) div.append(Object.assign(document.createElement("div"), { className: "headline", textContent: headline }));
+  const dt = Object.assign(document.createElement("dt"), { textContent: label });
+  const dd = Object.assign(document.createElement("dd"), { textContent: value });
+  const small = Object.assign(document.createElement("div"), { className: "sub", textContent: sub });
+  div.append(dt, dd, small);
+  div.title = sub;
+  return div;
+}
+
+async function computeMetrics() {
+  const status = $("metrics-status");
+  const form = new FormData();
+  form.append("source", state.lastResult.original, "source.wav");
+  form.append("output", state.lastResult.output, "output.wav");
+  form.append("speaker_encoder", $("metric-speaker").value);
+  form.append("ser_model", $("metric-ser").value);
+  status.className = "status";
+  status.textContent = "Computing…";
+  $("compute-metrics").disabled = true;
+  try {
+    const res = await fetch("/api/metrics/compute", { method: "POST", body: form });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `${res.status} ${res.statusText}`);
+    const r = await res.json();
+    const tiles = [];
+    if (r.speaker_similarity) {
+      const tile = metricTile("Speaker similarity (cosine)", r.speaker_similarity.value.toFixed(3), "↓ lower = more private");
+      tile.title = r.speaker_similarity.model;
+      tiles.push(tile);
+    }
+    if (r.emotion_distance) {
+      const e = r.emotion_distance;
+      const change = e.source_emotion ? `${e.source_emotion} → ${e.output_emotion}` : "";
+      const tile = metricTile("Emotion distance (MED)", e.value.toFixed(3), "↓ lower = emotion better preserved", change);
+      tile.title = e.model;
+      tiles.push(tile);
+    }
+    $("metrics-results").replaceChildren(...tiles);
+    status.textContent = `Computed in ${formatSeconds(r.seconds)}.`;
+  } catch (err) {
+    status.className = "status error";
+    status.textContent = err.message;
+  } finally {
+    updateMetricsButton();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +719,11 @@ async function init() {
   document.querySelectorAll("input[name=stream-source]").forEach((el) =>
     el.addEventListener("change", () => ((state.streamSource = el.value), updateRunButton())),
   );
+  $("metrics-panel").addEventListener("toggle", () => $("metrics-panel").open && refreshMetricOptions());
+  for (const id of ["metric-speaker", "metric-ser"]) {
+    $(id).addEventListener("change", () => (($(id).dataset.touched = "1"), updateMetricsButton()));
+  }
+  $("compute-metrics").addEventListener("click", computeMetrics);
   $("stream-file-button").addEventListener("click", () => $("stream-file").click());
   $("stream-file").addEventListener("change", () => {
     state.streamFile = $("stream-file").files[0] || null;

@@ -30,6 +30,20 @@ cd SAS_interface
 Browsers only allow the microphone on `http://localhost` or HTTPS, so open the page there if you want to record.
 If the app runs on a remote machine, forward the port with `ssh -L 8000:localhost:8000 <host>`.
 
+## Metrics (anonymization)
+
+After an anonymization (non-streaming, or once a stream is stopped), the **Metrics** panel under the result compares source and output:
+
+| Metric | Models | Reading |
+|---|---|---|
+| Speaker similarity: cosine between speaker embeddings | every `SpeakerEncoder` exported by `quick_convert.components.speaker.speaker_encoders` (CAMPPlus by default, ESPnet WavLM-ECAPA) | lower = more private |
+| Emotion distance (MED): Euclidean distance between SER emotion vectors | every `SERSystem` in `quick_convert.systems.ser.__all__` (Odyssey WavLM) | lower = emotion better preserved |
+
+The `metrics` worker discovers these classes from quick-convert at start-up, so new encoders or SER models added
+there appear in the dropdowns automatically. A model whose quick-convert extra is not installed is listed as
+unavailable with the missing package; add the extra to [`workers/metrics/pyproject.toml`](workers/metrics/pyproject.toml).
+Installing that environment builds `pyworld` (an ESPnet dependency), which needs a C++ compiler.
+
 ## Checking an install
 
 While `./run.sh` is up, run `uv run --project gateway python scripts/smoke_test.py`. It converts a bundled clip with
@@ -39,7 +53,8 @@ every model and task, using the manifest defaults, and writes the outputs to `lo
 
 ```
 browser ──HTTP──▶ gateway (FastAPI, serves the UI) ──HTTP──▶ worker "quickconvert"    (torch 2.6: ASR-BN, kNN-VC)
-                                                    └──────▶ worker "streamvoiceanon" (torch 2.4: StreamVoiceAnon)
+                                                    ├──────▶ worker "streamvoiceanon" (torch 2.4: StreamVoiceAnon)
+                                                    └──────▶ worker "metrics"         (speaker encoders + SER)
 ```
 
 The gateway (`gateway/`) serves the plain HTML/JS UI and routes requests to workers. It has no ML dependencies.

@@ -16,3 +16,5 @@ workers:
     url: http://127.0.0.1:8101
   streamvoiceanon:       # StreamVoiceAnon (torch 2.4, needs a CUDA GPU)
     url: http://127.0.0.1:8102
+  metrics:               # metrics panel: speaker encoders + SER from quick-convert
+    url: http://127.0.0.1:8103
