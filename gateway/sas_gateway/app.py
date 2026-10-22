@@ -19,6 +19,15 @@ from websockets.exceptions import WebSocketException
 from .config import Config, load_config, load_manifests
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+class RevalidatedStaticFiles(StaticFiles):
+    """No-build frontend: make browsers revalidate (cheap 304) so an updated app.js is never stale."""
+
+    def file_response(self, *args, **kwargs) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 METRICS_WORKER = "metrics"  # serves /metrics/* instead of models (workers/common/sas_worker/metrics.py)
 # Conversions of a 60 s clip on a slow GPU (or CPU) can take minutes.
 CONVERT_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
@@ -168,6 +177,7 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         output: UploadFile = File(...),
         speaker_encoder: str = Form(""),
         ser_model: str = Form(""),
+        f0_tracker: str = Form(""),
     ) -> Response:
         url = metrics_url()
         files = [
@@ -177,7 +187,7 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         try:
             r = await client.post(
                 f"{url}/metrics/compute",
-                data={"speaker_encoder": speaker_encoder, "ser_model": ser_model},
+                data={"speaker_encoder": speaker_encoder, "ser_model": ser_model, "f0_tracker": f0_tracker},
                 files=files,
                 timeout=CONVERT_TIMEOUT,
             )
@@ -227,5 +237,5 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
             except Exception:
                 pass
 
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", RevalidatedStaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

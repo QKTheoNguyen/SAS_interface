@@ -6,7 +6,7 @@ requires-python = ">=3.11,<3.12"
 # Each quick-convert extra here makes more speaker encoders / SER models appear in the UI.
 # Add an extra (e.g. "pyannote") to expose the models that need it.
 dependencies = [
-    "quick-convert[cosyvoice,espnet-wavlm-joint,transformers]",
+    "quick-convert[cosyvoice,espnet-wavlm-joint,opensmile,transformers]",
     "sas-worker",
     # The Odyssey SER model uses trust_remote_code written for transformers 4.x.
     "transformers>=4.36,<5",

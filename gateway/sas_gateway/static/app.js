@@ -462,6 +462,7 @@ function showResult({ original, output, model, meta }) {
   $("result-card").hidden = false;
   state.lastResult = { original, output, task: state.task };
   $("metrics-results").replaceChildren();
+  $("f0-plot").hidden = true;
   $("metrics-status").textContent = "";
   $("metrics-panel").hidden = !(state.config.metrics && state.task === "anonymization");
   updateMetricsButton();
@@ -494,7 +495,9 @@ async function refreshMetricOptions() {
     const options = await fetchJson("/api/metrics/options");
     fillMetricSelect($("metric-speaker"), options.speaker_encoders);
     fillMetricSelect($("metric-ser"), options.ser_models);
-    const pending = [...options.speaker_encoders, ...options.ser_models].some((m) => ["pending", "loading"].includes(m.status));
+    fillMetricSelect($("metric-f0"), options.f0_trackers);
+    const all = [...options.speaker_encoders, ...options.ser_models, ...options.f0_trackers];
+    const pending = all.some((m) => ["pending", "loading"].includes(m.status));
     clearTimeout(state.metricsPoll);
     if (pending && $("metrics-panel").open) state.metricsPoll = setTimeout(refreshMetricOptions, 3000);
   } catch (err) {
@@ -505,7 +508,7 @@ async function refreshMetricOptions() {
 }
 
 function updateMetricsButton() {
-  const chosen = $("metric-speaker").value || $("metric-ser").value;
+  const chosen = $("metric-speaker").value || $("metric-ser").value || $("metric-f0").value;
   // Metrics need a finished result: a live stream must be stopped first.
   $("compute-metrics").disabled = !state.lastResult || !!state.stream || !chosen;
   $("compute-metrics").title = state.stream ? "Stop the stream first" : chosen ? "" : "Pick at least one model";
@@ -529,6 +532,7 @@ async function computeMetrics() {
   form.append("output", state.lastResult.output, "output.wav");
   form.append("speaker_encoder", $("metric-speaker").value);
   form.append("ser_model", $("metric-ser").value);
+  form.append("f0_tracker", $("metric-f0").value);
   status.className = "status";
   status.textContent = "Computing…";
   $("compute-metrics").disabled = true;
@@ -550,6 +554,8 @@ async function computeMetrics() {
       tiles.push(tile);
     }
     $("metrics-results").replaceChildren(...tiles);
+    $("f0-plot").hidden = !r.f0;
+    if (r.f0) renderF0Plot($("f0-plot"), r.f0);
     status.textContent = `Computed in ${formatSeconds(r.seconds)}.`;
   } catch (err) {
     status.className = "status error";
@@ -557,6 +563,150 @@ async function computeMetrics() {
   } finally {
     updateMetricsButton();
   }
+}
+
+// ~5 round-numbered ticks covering [lo, hi].
+function niceTicks(lo, hi, count = 5) {
+  const raw = (hi - lo) / count;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(6));
+  return ticks;
+}
+
+// Index of the frame time closest to t (frame times are increasing).
+function nearestFrame(times, t) {
+  let lo = 0;
+  let hi = times.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] < t) lo = mid;
+    else hi = mid;
+  }
+  return Math.abs(times[hi] - t) < Math.abs(times[lo] - t) ? hi : lo;
+}
+
+/**
+ * Overlaid source/output F0 contours (Hz); unvoiced frames (null) are gaps.
+ * The output can be shifted in time to compensate for the model's delay.
+ */
+function renderF0Plot(figure, f0) {
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, text) => {
+    const node = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const W = 640, H = 240, L = 44, R = 10, T = 8, B = 28;
+  const series = [
+    { key: "source", label: "Source", shift: 0, ...f0.source },
+    { key: "output", label: "Output", shift: 0, ...f0.output },
+  ];
+  const voiced = series.flatMap((s) => s.hz.filter((v) => v !== null));
+  const tMax = Math.max(...series.map((s) => s.t.at(-1) ?? 0), 0.01);
+  let yMin = voiced.length ? Math.min(...voiced) : 50;
+  let yMax = voiced.length ? Math.max(...voiced) : 500;
+  const pad = Math.max((yMax - yMin) * 0.1, 5);
+  yMin = Math.max(0, yMin - pad);
+  yMax += pad;
+  const x = (t) => L + (t / tMax) * (W - L - R);
+  const y = (hz) => T + (1 - (hz - yMin) / (yMax - yMin)) * (H - T - B);
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `F0 contours of source and output (${f0.model})` });
+  for (const v of niceTicks(yMin, yMax)) {
+    svg.append(el("line", { class: "grid", x1: L, x2: W - R, y1: y(v), y2: y(v) }));
+    svg.append(el("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end" }, String(v)));
+  }
+  for (const v of niceTicks(0, tMax, 6)) {
+    svg.append(el("text", { x: x(v), y: H - B + 16, "text-anchor": "middle" }, `${v}`));
+  }
+  svg.append(el("text", { x: W - R, y: H - 4, "text-anchor": "end" }, "time (s)"));
+  svg.append(el("line", { class: "axis", x1: L, x2: W - R, y1: H - B, y2: H - B }));
+  const clip = el("clipPath", { id: "f0-clip" });
+  clip.append(el("rect", { x: L, y: 0, width: W - L - R, height: H - B }));
+  svg.append(clip);
+  const draw = (s) => {
+    let d = "";
+    let pen = false;
+    s.t.forEach((t, i) => {
+      if (s.hz[i] === null) return void (pen = false);
+      d += `${pen ? "L" : "M"}${x(t + s.shift).toFixed(1)} ${y(s.hz[i]).toFixed(1)}`;
+      pen = true;
+    });
+    s.path.setAttribute("d", d);
+  };
+  for (const s of series) {
+    s.path = el("path", { class: `series ${s.key}`, "clip-path": "url(#f0-clip)" });
+    draw(s);
+    svg.append(s.path);
+  }
+
+  // Hover: vertical guide, a dot per voiced series, values in the legend.
+  const guide = el("line", { class: "guide", y1: T, y2: H - B, visibility: "hidden" });
+  const dots = series.map((s) => el("circle", { class: `dot ${s.key}`, r: 3, visibility: "hidden" }));
+  svg.append(guide, ...dots);
+  const legend = Object.assign(document.createElement("div"), { className: "legend" });
+  const readouts = series.map((s) => {
+    const item = document.createElement("span");
+    item.append(Object.assign(document.createElement("span"), { className: `swatch ${s.key}` }), s.label);
+    const value = Object.assign(document.createElement("span"), { className: "muted" });
+    item.append(value);
+    legend.append(item);
+    return value;
+  });
+  const timeReadout = Object.assign(document.createElement("span"), { className: "muted" });
+  legend.append(timeReadout);
+  const clear = () => {
+    guide.setAttribute("visibility", "hidden");
+    dots.forEach((dot) => dot.setAttribute("visibility", "hidden"));
+    readouts.forEach((r) => (r.textContent = ""));
+    timeReadout.textContent = "";
+  };
+  svg.addEventListener("pointermove", (event) => {
+    const box = svg.getBoundingClientRect();
+    const t = (((event.clientX - box.left) / box.width) * W - L) / (W - L - R) * tMax;
+    if (t < 0 || t > tMax) return clear();
+    guide.setAttribute("x1", x(t));
+    guide.setAttribute("x2", x(t));
+    guide.setAttribute("visibility", "visible");
+    timeReadout.textContent = `t = ${t.toFixed(2)} s`;
+    series.forEach((s, i) => {
+      const local = t - s.shift;
+      const hz = local < 0 || local > s.t.at(-1) ? null : s.hz[nearestFrame(s.t, local)];
+      readouts[i].textContent = hz === null ? " — unvoiced" : ` ${Math.round(hz)} Hz`;
+      if (hz !== null) {
+        dots[i].setAttribute("cx", x(t));
+        dots[i].setAttribute("cy", y(hz));
+      }
+      dots[i].setAttribute("visibility", hz === null ? "hidden" : "visible");
+    });
+  });
+  svg.addEventListener("pointerleave", clear);
+
+  const caption = Object.assign(document.createElement("figcaption"), { textContent: `F0 contour (Hz) · ${f0.model}` });
+  // Manual alignment: move the output contour earlier/later (Shift+click for bigger steps).
+  const output = series[1];
+  const shiftReadout = Object.assign(document.createElement("span"), { className: "muted" });
+  shiftReadout.setAttribute("role", "status");
+  const showShift = () => (shiftReadout.textContent = `Output shift: ${output.shift >= 0 ? "+" : "−"}${Math.round(Math.abs(output.shift) * 1000)} ms`);
+  const shiftButton = (text, direction) => {
+    const button = Object.assign(document.createElement("button"), { type: "button", className: "secondary", textContent: text });
+    button.title = `Move the output contour ${direction < 0 ? "earlier" : "later"} by 10 ms (Shift: 50 ms)`;
+    button.addEventListener("click", (event) => {
+      output.shift = Math.round((output.shift + direction * (event.shiftKey ? 0.05 : 0.01)) * 1000) / 1000;
+      draw(output);
+      showShift();
+      clear();
+    });
+    return button;
+  };
+  showShift();
+  const controls = Object.assign(document.createElement("div"), { className: "shift" });
+  controls.append(shiftButton("◀ Backward", -1), shiftReadout, shiftButton("Forward ▶", 1));
+
+  figure.replaceChildren(caption, svg, legend, controls);
 }
 
 // ---------------------------------------------------------------------------
@@ -720,7 +870,7 @@ async function init() {
     el.addEventListener("change", () => ((state.streamSource = el.value), updateRunButton())),
   );
   $("metrics-panel").addEventListener("toggle", () => $("metrics-panel").open && refreshMetricOptions());
-  for (const id of ["metric-speaker", "metric-ser"]) {
+  for (const id of ["metric-speaker", "metric-ser", "metric-f0"]) {
     $(id).addEventListener("change", () => (($(id).dataset.touched = "1"), updateMetricsButton()));
   }
   $("compute-metrics").addEventListener("click", computeMetrics);

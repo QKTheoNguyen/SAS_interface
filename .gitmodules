@@ -9,3 +9,7 @@
 	path = third_party/Voice-Privacy-Challenge-2026
 	url = https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026
 	ignore = untracked
+[submodule "third_party/TVTSyn"]
+	path = third_party/TVTSyn
+	url = https://github.com/PSI-TAMU/TVTSyn
+	ignore = untracked

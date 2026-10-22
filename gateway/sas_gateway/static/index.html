@@ -112,9 +112,14 @@
               <label for="metric-ser">Emotion model (SER)</label>
               <select id="metric-ser"></select>
             </div>
+            <div class="param">
+              <label for="metric-f0">F0 tracker</label>
+              <select id="metric-f0"></select>
+            </div>
             <button type="button" class="secondary" id="compute-metrics">Compute metrics</button>
             <p class="status" id="metrics-status" role="status"></p>
             <dl class="stats" id="metrics-results"></dl>
+            <figure id="f0-plot" hidden></figure>
           </details>
         </section>
       </div>

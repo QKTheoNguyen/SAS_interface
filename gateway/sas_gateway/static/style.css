@@ -149,6 +149,20 @@ button.recording { border-color: var(--danger); color: var(--danger); }
 #metrics-panel { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
 #metrics-panel select { width: 100%; }
 #metrics-results { margin-top: 10px; }
+#f0-plot { margin: 12px 0 0; }
+#f0-plot figcaption { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+#f0-plot svg { display: block; width: 100%; height: auto; touch-action: none; }
+#f0-plot .axis { stroke: var(--border); }
+#f0-plot .grid { stroke: var(--border); stroke-dasharray: 2 3; }
+#f0-plot text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+#f0-plot .series { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+#f0-plot .source { stroke: var(--muted); color: var(--muted); }
+#f0-plot .output { stroke: var(--accent); color: var(--accent); }
+#f0-plot .guide { stroke: var(--text); stroke-opacity: 0.4; }
+#f0-plot .dot { stroke: none; fill: currentColor; }
+#f0-plot .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.85rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
+#f0-plot .shift { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+#f0-plot .swatch { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
 
 details summary { cursor: pointer; color: var(--muted); margin: 4px 0 8px; }
 

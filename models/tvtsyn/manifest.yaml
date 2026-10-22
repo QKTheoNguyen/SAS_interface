@@ -1,0 +1,34 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: tvtsyn
+label: TVTSyn
+description: >-
+  Streaming voice conversion with content-synchronous time-varying timbre
+  (ICLR 2026). Converts in 100 ms steps with 80 ms lookahead, conditioned on
+  an x-vector + ECAPA embedding of the reference voice. Anonymization
+  conditions on a pseudo-speaker instead of your voice. Runs on CPU or GPU.
+links:
+  - label: GitHub
+    url: https://github.com/PSI-TAMU/TVTSyn
+  - label: Paper
+    url: https://arxiv.org/abs/2602.09389
+worker: tvtsyn
+modes: [non-streaming, streaming]
+
+tasks:
+  anonymization:
+    target_voice: optional
+    target_voice_label: Own reference voice
+    target_voice_help: >-
+      Record or upload your own reference clips to replace the pseudo-speaker.
+    params:
+      - name: reference_speaker
+        label: Pseudo-speaker
+        type: choice
+        choices_from: worker
+        extra_choices: [random]
+        default: random
+        help: Reference voice from the bundled LibriSpeech train-clean-360 pool. "random" picks a new one for each run.
+
+  voice_conversion:
+    target_voice: required
+    params: []

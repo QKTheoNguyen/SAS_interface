@@ -13,10 +13,12 @@ You pick a task and a mode, record or upload some speech, adjust the model's set
 | Anonymization | SSL speaker pool (VPC BM1) | ✅ | — | `vpc` |
 | Anonymization | NAC / Bark (VPC B4), slow | ✅ | — | `vpc` |
 | Anonymization | [StreamVoiceAnon](https://github.com/Plachtaa/StreamVoiceAnon) | ✅ | ✅ | `streamvoiceanon` (CUDA only) |
+| Anonymization | [TVTSyn](https://github.com/PSI-TAMU/TVTSyn) | ✅ | ✅ | `tvtsyn` |
 | Voice conversion | StreamVoiceAnon | ✅ | ✅ | `streamvoiceanon` (CUDA only) |
+| Voice conversion | TVTSyn | ✅ | ✅ | `tvtsyn` |
 | Voice conversion | [kNN-VC](https://github.com/bshall/knn-vc) | ✅ | — | `quickconvert` |
 
-For anonymization, StreamVoiceAnon picks from a bundled pool of 10 LibriSpeech `train-clean-360` pseudo-speakers
+For anonymization, StreamVoiceAnon and TVTSyn pick from a bundled pool of 10 LibriSpeech `train-clean-360` pseudo-speakers
 ([models/streamvoiceanon/references/](models/streamvoiceanon/references/README.md)) unless you upload your own reference.
 Its context holds about 45 s of source and reference audio combined.
 
@@ -49,6 +51,7 @@ After an anonymization (non-streaming, or once a stream is stopped), the **Metri
 |---|---|---|
 | Speaker similarity: cosine between speaker embeddings | every `SpeakerEncoder` exported by `quick_convert.components.speaker.speaker_encoders` (CAMPPlus by default, ESPnet WavLM-ECAPA) | lower = more private |
 | Emotion distance (MED): Euclidean distance between SER emotion vectors | every `SERSystem` in `quick_convert.systems.ser.__all__` (Odyssey WavLM) | lower = emotion better preserved |
+| F0 contour: source and output pitch overlaid (Hz, gaps = unvoiced) | every extractor in `quick_convert.components.feature_extractors` returning `ProsodyMeasurements` columns (OpenSMILE ComParE by default), plus WORLD DIO with the Masked Prosody Model's settings | plot only |
 
 The `metrics` worker discovers these classes from quick-convert at start-up, so new encoders or SER models added
 there appear in the dropdowns automatically. A model whose quick-convert extra is not installed is listed as
@@ -66,8 +69,9 @@ every model and task, using the manifest defaults, and writes the outputs to `lo
 ```
 browser ──HTTP──▶ gateway (FastAPI, serves the UI) ──HTTP──▶ worker "quickconvert"    (torch 2.6: ASR-BN, kNN-VC)
                                                     ├──────▶ worker "streamvoiceanon" (torch 2.4: StreamVoiceAnon)
+                                                    ├──────▶ worker "tvtsyn"          (torch 2.8: TVTSyn)
                                                     ├──────▶ worker "vpc"             (torch 2.8: VoicePrivacy Challenge 2026 baselines)
-                                                    └──────▶ worker "metrics"         (speaker encoders + SER)
+                                                    └──────▶ worker "metrics"         (speaker encoders + SER + F0)
 ```
 
 The gateway (`gateway/`) serves the plain HTML/JS UI and routes requests to workers. It has no ML dependencies.
@@ -150,6 +154,8 @@ The code in this repository is released under the [MIT License](LICENSE).
 Third-party parts keep their own licenses:
 
 - `third_party/StreamVoiceAnon`: Apache 2.0 (git submodule, not redistributed here).
+- `third_party/TVTSyn`: CC BY-NC 4.0, code and model weights (git submodule, not redistributed here).
+  Non-commercial use only; disable the `tvtsyn` worker in `config.yaml` otherwise.
 - `third_party/quick-convert`: see that repository (git submodule, not redistributed here).
 - `third_party/Voice-Privacy-Challenge-2026`: GPL-3.0 (git submodule, not redistributed here).
   The adapters that import its code (`models/mcadams/`, `models/ssl_bm1/`, `models/nac/`) are therefore

@@ -16,6 +16,8 @@ workers:
     url: http://127.0.0.1:8101
   streamvoiceanon:       # StreamVoiceAnon (torch 2.4, needs a CUDA GPU)
     url: http://127.0.0.1:8102
+  tvtsyn:                # TVTSyn (torch 2.8, CPU or GPU)
+    url: http://127.0.0.1:8105
   vpc:                   # VoicePrivacy Challenge 2026 baselines: ASR-BN (VPC), McAdams, SSL BM1, NAC (torch 2.8)
     url: http://127.0.0.1:8104
   metrics:               # metrics panel: speaker encoders + SER from quick-convert
