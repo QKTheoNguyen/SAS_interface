@@ -116,10 +116,18 @@
               <label for="metric-f0">F0 tracker</label>
               <select id="metric-f0"></select>
             </div>
+            <div class="param">
+              <label for="metric-mos">Quality model (MOS)</label>
+              <select id="metric-mos"></select>
+            </div>
+            <div class="param">
+              <label><input type="checkbox" id="metric-spectrogram" /> Spectrograms (source and output)</label>
+            </div>
             <button type="button" class="secondary" id="compute-metrics">Compute metrics</button>
             <p class="status" id="metrics-status" role="status"></p>
             <dl class="stats" id="metrics-results"></dl>
             <figure id="f0-plot" hidden></figure>
+            <figure id="spectrogram-plot" hidden></figure>
           </details>
         </section>
       </div>

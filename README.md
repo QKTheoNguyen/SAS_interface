@@ -52,6 +52,8 @@ After an anonymization (non-streaming, or once a stream is stopped), the **Metri
 | Speaker similarity: cosine between speaker embeddings | every `SpeakerEncoder` exported by `quick_convert.components.speaker.speaker_encoders` (CAMPPlus by default, ESPnet WavLM-ECAPA) | lower = more private |
 | Emotion distance (MED): Euclidean distance between SER emotion vectors | every `SERSystem` in `quick_convert.systems.ser.__all__` (Odyssey WavLM) | lower = emotion better preserved |
 | F0 contour: source and output pitch overlaid (Hz, gaps = unvoiced) | every extractor in `quick_convert.components.feature_extractors` returning `ProsodyMeasurements` columns (OpenSMILE ComParE by default), plus WORLD DIO with the Masked Prosody Model's settings | plot only |
+| Naturalness (UTMOS): predicted MOS of source and output | UTMOS22 strong, not in quick-convert: fetched via `torch.hub` from [tarepan/SpeechMOS](https://github.com/tarepan/SpeechMOS) (392 MB) | higher = more natural (1–5) |
+| Spectrograms: source on top, output below, each with its own F0 contour when an F0 tracker is selected | `torch.stft` (0–5 kHz, 25 ms Hann window, 70 dB range; F0 on a right-hand Hz axis) | plot only |
 
 The `metrics` worker discovers these classes from quick-convert at start-up, so new encoders or SER models added
 there appear in the dropdowns automatically. A model whose quick-convert extra is not installed is listed as
@@ -71,7 +73,7 @@ browser ──HTTP──▶ gateway (FastAPI, serves the UI) ──HTTP──▶
                                                     ├──────▶ worker "streamvoiceanon" (torch 2.4: StreamVoiceAnon)
                                                     ├──────▶ worker "tvtsyn"          (torch 2.8: TVTSyn)
                                                     ├──────▶ worker "vpc"             (torch 2.8: VoicePrivacy Challenge 2026 baselines)
-                                                    └──────▶ worker "metrics"         (speaker encoders + SER + F0)
+                                                    └──────▶ worker "metrics"         (speaker encoders + SER + F0 + UTMOS)
 ```
 
 The gateway (`gateway/`) serves the plain HTML/JS UI and routes requests to workers. It has no ML dependencies.

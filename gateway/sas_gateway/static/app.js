@@ -463,6 +463,7 @@ function showResult({ original, output, model, meta }) {
   state.lastResult = { original, output, task: state.task };
   $("metrics-results").replaceChildren();
   $("f0-plot").hidden = true;
+  $("spectrogram-plot").hidden = true;
   $("metrics-status").textContent = "";
   $("metrics-panel").hidden = !(state.config.metrics && state.task === "anonymization");
   updateMetricsButton();
@@ -496,7 +497,8 @@ async function refreshMetricOptions() {
     fillMetricSelect($("metric-speaker"), options.speaker_encoders);
     fillMetricSelect($("metric-ser"), options.ser_models);
     fillMetricSelect($("metric-f0"), options.f0_trackers);
-    const all = [...options.speaker_encoders, ...options.ser_models, ...options.f0_trackers];
+    fillMetricSelect($("metric-mos"), options.mos_models);
+    const all = [...options.speaker_encoders, ...options.ser_models, ...options.f0_trackers, ...options.mos_models];
     const pending = all.some((m) => ["pending", "loading"].includes(m.status));
     clearTimeout(state.metricsPoll);
     if (pending && $("metrics-panel").open) state.metricsPoll = setTimeout(refreshMetricOptions, 3000);
@@ -508,10 +510,11 @@ async function refreshMetricOptions() {
 }
 
 function updateMetricsButton() {
-  const chosen = $("metric-speaker").value || $("metric-ser").value || $("metric-f0").value;
+  const chosen =
+    $("metric-speaker").value || $("metric-ser").value || $("metric-f0").value || $("metric-mos").value || $("metric-spectrogram").checked;
   // Metrics need a finished result: a live stream must be stopped first.
   $("compute-metrics").disabled = !state.lastResult || !!state.stream || !chosen;
-  $("compute-metrics").title = state.stream ? "Stop the stream first" : chosen ? "" : "Pick at least one model";
+  $("compute-metrics").title = state.stream ? "Stop the stream first" : chosen ? "" : "Pick at least one model or the spectrograms";
 }
 
 function metricTile(label, value, sub, headline) {
@@ -533,6 +536,8 @@ async function computeMetrics() {
   form.append("speaker_encoder", $("metric-speaker").value);
   form.append("ser_model", $("metric-ser").value);
   form.append("f0_tracker", $("metric-f0").value);
+  form.append("mos_model", $("metric-mos").value);
+  form.append("spectrogram", $("metric-spectrogram").checked);
   status.className = "status";
   status.textContent = "Computing…";
   $("compute-metrics").disabled = true;
@@ -553,9 +558,16 @@ async function computeMetrics() {
       tile.title = e.model;
       tiles.push(tile);
     }
+    if (r.mos) {
+      const tile = metricTile("Naturalness (UTMOS)", r.mos.output.toFixed(2), `source ${r.mos.source.toFixed(2)} · ↑ higher = more natural (1–5)`);
+      tile.title = r.mos.model;
+      tiles.push(tile);
+    }
     $("metrics-results").replaceChildren(...tiles);
     $("f0-plot").hidden = !r.f0;
     if (r.f0) renderF0Plot($("f0-plot"), r.f0);
+    $("spectrogram-plot").hidden = !r.spectrogram;
+    if (r.spectrogram) renderSpectrograms($("spectrogram-plot"), r.spectrogram, r.f0);
     status.textContent = `Computed in ${formatSeconds(r.seconds)}.`;
   } catch (err) {
     status.className = "status error";
@@ -707,6 +719,145 @@ function renderF0Plot(figure, f0) {
   controls.append(shiftButton("◀ Backward", -1), shiftReadout, shiftButton("Forward ▶", 1));
 
   figure.replaceChildren(caption, svg, legend, controls);
+}
+
+// Magma colormap stops, quiet → loud (reads on both light and dark pages).
+const MAGMA = ["#000004", "#1c1044", "#4f127b", "#812581", "#b5367a", "#e55064", "#fb8761", "#fec287", "#fcfdbf"];
+const F0_ON_SPECTROGRAM = "#5ad8ff";
+
+// 256-entry RGB lookup table interpolated between colour stops.
+function colorLut(stops) {
+  const rgb = stops.map((hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)));
+  const lut = new Uint8ClampedArray(256 * 3);
+  for (let v = 0; v < 256; v++) {
+    const p = (v / 255) * (rgb.length - 1);
+    const i = Math.min(Math.floor(p), rgb.length - 2);
+    for (let c = 0; c < 3; c++) lut[v * 3 + c] = rgb[i][c] + (rgb[i + 1][c] - rgb[i][c]) * (p - i);
+  }
+  return lut;
+}
+
+/**
+ * Source (top) and output (bottom) spectrograms on a shared time axis. When F0 was
+ * computed, each panel overlays its own signal's contour on a right-hand Hz axis
+ * (Praat convention: F0 has its own scale, not the spectrogram's).
+ */
+function renderSpectrograms(figure, spec, f0) {
+  const W = 640, H = 200, L = 44, R = f0 ? 44 : 10, T = 8, B = 28;
+  const style = getComputedStyle(figure);
+  const muted = style.getPropertyValue("--muted").trim();
+  const font = `11px ${style.fontFamily}`;
+  const panels = [
+    { key: "source", label: "Source", spec: spec.source, f0: f0?.source },
+    { key: "output", label: "Output", spec: spec.output, f0: f0?.output },
+  ];
+  const tMax = Math.max(...panels.map((p) => p.spec.frames * p.spec.hop_s), ...panels.map((p) => p.f0?.t.at(-1) ?? 0), 0.01);
+  const voiced = panels.flatMap((p) => p.f0?.hz.filter((v) => v !== null) ?? []);
+  let yMin = voiced.length ? Math.min(...voiced) : 50;
+  let yMax = voiced.length ? Math.max(...voiced) : 500;
+  const pad = Math.max((yMax - yMin) * 0.1, 5);
+  yMin = Math.max(0, yMin - pad);
+  yMax += pad;
+  const lut = colorLut(MAGMA);
+  const x = (t) => L + (t / tMax) * (W - L - R);
+  const yHz = (hz) => T + (1 - hz / panels[0].spec.fmax) * (H - T - B);
+  const yF0 = (hz) => T + (1 - (hz - yMin) / (yMax - yMin)) * (H - T - B);
+
+  const draw = (panel) => {
+    const { spec: s } = panel;
+    const bytes = Uint8Array.from(atob(s.data), (c) => c.charCodeAt(0));
+    const image = new ImageData(s.frames, s.bins);
+    for (let f = 0; f < s.frames; f++) {
+      for (let b = 0; b < s.bins; b++) {
+        const v = bytes[f * s.bins + b];
+        const px = ((s.bins - 1 - b) * s.frames + f) * 4;
+        image.data[px] = lut[v * 3];
+        image.data[px + 1] = lut[v * 3 + 1];
+        image.data[px + 2] = lut[v * 3 + 2];
+        image.data[px + 3] = 255;
+      }
+    }
+    const heatmap = Object.assign(document.createElement("canvas"), { width: s.frames, height: s.bins });
+    heatmap.getContext("2d").putImageData(image, 0, 0);
+
+    const dpr = window.devicePixelRatio || 1;
+    const canvas = Object.assign(document.createElement("canvas"), { width: W * dpr, height: H * dpr });
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", `${panel.label} spectrogram${panel.f0 ? " with F0 contour" : ""}`);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.drawImage(heatmap, L, T, x(s.frames * s.hop_s) - L, H - T - B);
+
+    ctx.font = font;
+    ctx.fillStyle = muted;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "right";
+    for (const v of niceTicks(0, s.fmax / 1000)) ctx.fillText(String(v), L - 6, yHz(v * 1000));
+    ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left";
+    ctx.fillText("kHz", 4, T + 4);
+    ctx.textAlign = "center";
+    for (const v of niceTicks(0, tMax, 6)) ctx.fillText(String(v), x(v), H - B + 16);
+    ctx.textAlign = "right";
+    ctx.fillText("time (s)", W - R, H - 4);
+
+    if (panel.f0) {
+      ctx.fillStyle = F0_ON_SPECTROGRAM;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      for (const v of niceTicks(yMin, yMax)) ctx.fillText(String(v), W - R + 6, yF0(v));
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText("F0 Hz", W - R + 2, T + 4);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(L, T, W - L - R, H - T - B);
+      ctx.clip();
+      ctx.beginPath();
+      let pen = false;
+      panel.f0.t.forEach((t, i) => {
+        const hz = panel.f0.hz[i];
+        if (hz === null) return void (pen = false);
+        ctx[pen ? "lineTo" : "moveTo"](x(t), yF0(hz));
+        pen = true;
+      });
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+      ctx.strokeStyle = F0_ON_SPECTROGRAM;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Hover readout: time, frequency under the cursor, and F0 of this signal.
+    const readout = Object.assign(document.createElement("span"), { className: "muted" });
+    canvas.addEventListener("pointermove", (event) => {
+      const box = canvas.getBoundingClientRect();
+      const px = ((event.clientX - box.left) / box.width) * W;
+      const py = ((event.clientY - box.top) / box.height) * H;
+      if (px < L || px > W - R || py < T || py > H - B) return void (readout.textContent = "");
+      const t = ((px - L) / (W - L - R)) * tMax;
+      const hz = (1 - (py - T) / (H - T - B)) * s.fmax;
+      let text = `t = ${t.toFixed(2)} s · ${Math.round(hz)} Hz`;
+      if (panel.f0 && t <= panel.f0.t.at(-1)) {
+        const value = panel.f0.hz[nearestFrame(panel.f0.t, t)];
+        text += value === null ? " · F0 unvoiced" : ` · F0 ${Math.round(value)} Hz`;
+      }
+      readout.textContent = text;
+    });
+    canvas.addEventListener("pointerleave", () => (readout.textContent = ""));
+
+    const head = Object.assign(document.createElement("div"), { className: "spec-head" });
+    head.append(Object.assign(document.createElement("span"), { textContent: panel.label }), readout);
+    return [head, canvas];
+  };
+
+  const { fmax, range_db: rangeDb } = panels[0].spec;
+  const caption = Object.assign(document.createElement("figcaption"), {
+    textContent: `Spectrogram (0–${fmax / 1000} kHz, 25 ms window, ${rangeDb} dB range)${f0 ? ` · F0: ${f0.model}` : ""}`,
+  });
+  figure.replaceChildren(caption, ...panels.flatMap(draw));
 }
 
 // ---------------------------------------------------------------------------
@@ -870,9 +1021,10 @@ async function init() {
     el.addEventListener("change", () => ((state.streamSource = el.value), updateRunButton())),
   );
   $("metrics-panel").addEventListener("toggle", () => $("metrics-panel").open && refreshMetricOptions());
-  for (const id of ["metric-speaker", "metric-ser", "metric-f0"]) {
+  for (const id of ["metric-speaker", "metric-ser", "metric-f0", "metric-mos"]) {
     $(id).addEventListener("change", () => (($(id).dataset.touched = "1"), updateMetricsButton()));
   }
+  $("metric-spectrogram").addEventListener("change", updateMetricsButton);
   $("compute-metrics").addEventListener("click", computeMetrics);
   $("stream-file-button").addEventListener("click", () => $("stream-file").click());
   $("stream-file").addEventListener("change", () => {

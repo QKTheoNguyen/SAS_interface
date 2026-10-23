@@ -178,6 +178,8 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         speaker_encoder: str = Form(""),
         ser_model: str = Form(""),
         f0_tracker: str = Form(""),
+        mos_model: str = Form(""),
+        spectrogram: bool = Form(False),
     ) -> Response:
         url = metrics_url()
         files = [
@@ -187,7 +189,13 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         try:
             r = await client.post(
                 f"{url}/metrics/compute",
-                data={"speaker_encoder": speaker_encoder, "ser_model": ser_model, "f0_tracker": f0_tracker},
+                data={
+                    "speaker_encoder": speaker_encoder,
+                    "ser_model": ser_model,
+                    "f0_tracker": f0_tracker,
+                    "mos_model": mos_model,
+                    "spectrogram": str(spectrogram).lower(),
+                },
                 files=files,
                 timeout=CONVERT_TIMEOUT,
             )

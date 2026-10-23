@@ -163,6 +163,10 @@ button.recording { border-color: var(--danger); color: var(--danger); }
 #f0-plot .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.85rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
 #f0-plot .shift { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-variant-numeric: tabular-nums; }
 #f0-plot .swatch { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+#spectrogram-plot { margin: 16px 0 0; }
+#spectrogram-plot figcaption { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+#spectrogram-plot canvas { display: block; width: 100%; height: auto; touch-action: none; }
+#spectrogram-plot .spec-head { display: flex; justify-content: space-between; gap: 10px; font-size: 0.85rem; margin-top: 8px; font-variant-numeric: tabular-nums; }
 
 details summary { cursor: pointer; color: var(--muted); margin: 4px 0 8px; }
 

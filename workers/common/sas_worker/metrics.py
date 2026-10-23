@@ -4,6 +4,8 @@
 - Emotion distance (MED): Euclidean distance between SER emotion vectors, as in
   quick_convert/pipelines/evaluation/metrics/emo/med.py (lower = emotion better preserved).
 - F0 contours of both signals, for the panel's overlay plot.
+- Naturalness MOS of both signals (UTMOS, not in quick-convert: loaded via torch.hub).
+- Spectrograms of both signals, for the panel's heatmaps.
 
 The encoders, SER models and F0 trackers are discovered from quick-convert, so a new
 ``SpeakerEncoder`` exported by ``quick_convert.components.speaker.speaker_encoders``,
@@ -16,6 +18,7 @@ workers/metrics/pyproject.toml).
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import inspect
 import logging
@@ -48,8 +51,22 @@ LABELS = {
     "OdysseySER": "Odyssey WavLM categorical SER",
     "OpenSmileProsodyExtractor": "OpenSMILE ComParE F0",
     "WorldDioF0Extractor": "WORLD DIO (MPM settings)",
+    "UTMOS22Strong": "UTMOS22 strong (SpeechMOS)",
 }
-DEFAULTS = {"speaker": "CosyVoiceCAMPPlusSpeakerEncoder", "ser": "OdysseySER", "f0": "OpenSmileProsodyExtractor"}
+DEFAULTS = {
+    "speaker": "CosyVoiceCAMPPlusSpeakerEncoder",
+    "ser": "OdysseySER",
+    "f0": "OpenSmileProsodyExtractor",
+    "mos": "UTMOS22Strong",
+}
+
+# Spectrogram view, as Praat's defaults: 0-5 kHz, 70 dB below the loudest bin.
+SPEC_N_FFT = 512
+SPEC_WIN = 400  # 25 ms
+SPEC_HOP = 160  # 10 ms
+SPEC_FMAX = 5000
+SPEC_RANGE_DB = 70
+SPEC_MAX_FRAMES = 1500  # longer clips are average-pooled in time to keep the payload small
 
 
 class WorldDioF0Extractor:
@@ -79,10 +96,27 @@ class WorldDioF0Extractor:
         return outputs
 
 
+class UTMOS22Strong:
+    """UTMOS22 strong learner (Saeki et al., Interspeech 2022): predicted naturalness MOS (1-5)
+    of 16 kHz speech. Not in quick-convert; loaded from https://github.com/tarepan/SpeechMOS
+    via torch.hub (checkpoint cached under $TORCH_HOME/hub).
+    """
+
+    HUB_REPO = "tarepan/SpeechMOS:v1.2.0"
+
+    def __init__(self, device: str = "cpu"):
+        self.device = torch.device(device)
+        self.model = torch.hub.load(self.HUB_REPO, "utmos22_strong", trust_repo=True).to(self.device).eval()
+
+    @torch.inference_mode()
+    def predict(self, wav: torch.Tensor) -> float:
+        return float(self.model(wav.reshape(1, -1).to(self.device), SAMPLE_RATE)[0])
+
+
 @dataclass
 class MetricModel:
     id: str
-    kind: str  # "speaker" | "ser" | "f0"
+    kind: str  # "speaker" | "ser" | "f0" | "mos"
     cls: type | None
     status: str = "pending"  # pending -> loading -> ready | unavailable
     error: str | None = None
@@ -115,6 +149,7 @@ def discover() -> list[MetricModel]:
             if inspect.isclass(cls) and issubclass(cls, base) and not inspect.isabstract(cls):
                 found.append(MetricModel(name, kind, cls))
     found += [MetricModel(cls.__name__, "f0", cls) for cls in f0_extractors()]
+    found.append(MetricModel(UTMOS22Strong.__name__, "mos", UTMOS22Strong))
     return found
 
 
@@ -192,6 +227,29 @@ def f0_contour(extractor: Any, wav: torch.Tensor) -> dict:
     }
 
 
+def log_spectrogram(wav: torch.Tensor) -> dict:
+    """Log-magnitude STFT up to SPEC_FMAX, quantized to bytes for the canvas heatmap
+    (255 = loudest bin, 0 = SPEC_RANGE_DB or more below it), frame-major and base64-encoded."""
+    window = torch.hann_window(SPEC_WIN)
+    stft = torch.stft(wav.reshape(-1).float(), SPEC_N_FFT, SPEC_HOP, SPEC_WIN, window, center=True, return_complex=True)
+    bins = SPEC_FMAX * SPEC_N_FFT // SAMPLE_RATE + 1
+    power = stft[:bins].abs().square()
+    pool = -(-power.shape[1] // SPEC_MAX_FRAMES)
+    if pool > 1:
+        power = F.avg_pool1d(power[None], pool, ceil_mode=True)[0]
+    db = 10 * torch.log10(power.clamp_min(1e-10))
+    level = ((db - db.max()) / SPEC_RANGE_DB + 1).clamp(0, 1) * 255
+    data = level.round().to(torch.uint8).T.contiguous().numpy()
+    return {
+        "frames": data.shape[0],
+        "bins": data.shape[1],
+        "hop_s": pool * SPEC_HOP / SAMPLE_RATE,
+        "fmax": (bins - 1) * SAMPLE_RATE / SPEC_N_FFT,
+        "range_db": SPEC_RANGE_DB,
+        "data": base64.b64encode(data.tobytes()).decode("ascii"),
+    }
+
+
 def emotion_label(ser: Any, vector: np.ndarray) -> str | None:
     """Top class name when the SER exposes Hugging Face style id2label (Odyssey does)."""
     id2label = getattr(getattr(getattr(ser, "_model", None), "config", None), "id2label", None)
@@ -212,6 +270,8 @@ def load(model: MetricModel, device: torch.device) -> None:
             speaker_embedding(model.obj, noise)
         elif model.kind == "f0":
             f0_contour(model.obj, noise)
+        elif model.kind == "mos":
+            model.obj.predict(noise)
         else:
             emotion_vector(model.obj, noise)
         model.status = "ready"
@@ -259,6 +319,7 @@ def create_metrics_app(device: torch.device) -> FastAPI:
             "speaker_encoders": [m.describe() for m in models.values() if m.kind == "speaker"],
             "ser_models": [m.describe() for m in models.values() if m.kind == "ser"],
             "f0_trackers": [m.describe() for m in models.values() if m.kind == "f0"],
+            "mos_models": [m.describe() for m in models.values() if m.kind == "mos"],
         }
 
     def ready(model_id: str, kind: str) -> MetricModel:
@@ -276,10 +337,13 @@ def create_metrics_app(device: torch.device) -> FastAPI:
         speaker_encoder: str = Form(""),
         ser_model: str = Form(""),
         f0_tracker: str = Form(""),
+        mos_model: str = Form(""),
+        spectrogram: bool = Form(False),
     ) -> dict:
         encoder = ready(speaker_encoder, "speaker") if speaker_encoder else None
         ser = ready(ser_model, "ser") if ser_model else None
         tracker = ready(f0_tracker, "f0") if f0_tracker else None
+        mos = ready(mos_model, "mos") if mos_model else None
         try:
             src = read_wav(await source.read(), SAMPLE_RATE)
             out = read_wav(await output.read(), SAMPLE_RATE)
@@ -309,6 +373,14 @@ def create_metrics_app(device: torch.device) -> FastAPI:
                     "source": f0_contour(tracker.obj, src),
                     "output": f0_contour(tracker.obj, out),
                 }
+            if mos:
+                result["mos"] = {
+                    "model": LABELS.get(mos.id, mos.id),
+                    "source": mos.obj.predict(src),
+                    "output": mos.obj.predict(out),
+                }
+            if spectrogram:
+                result["spectrogram"] = {"source": log_spectrogram(src), "output": log_spectrogram(out)}
             result["seconds"] = time.perf_counter() - start
             return result
 
