@@ -9,3 +9,5 @@ README_perso.md
 .claude/
 *.pt
 hub/
+# SpeechBrain IEMOCAP SER (PSST1) writes its wav2vec2 cache to this relative path
+wav2vec2_checkpoints/

@@ -8,7 +8,7 @@
 - Spectrograms of both signals, for the panel's heatmaps.
 
 The encoders, SER models and F0 trackers are discovered from quick-convert, so a new
-``SpeakerEncoder`` exported by ``quick_convert.components.speaker.speaker_encoders``,
+``SpeakerEncoder`` exported by ``quick_convert.components.encoders.speaker``,
 a new ``SERSystem`` listed in ``quick_convert.systems.ser.__all__``, or a new feature
 extractor producing ``ProsodyMeasurements`` columns shows up in
 the UI without changes here (once its quick-convert extra is installed in
@@ -133,8 +133,8 @@ class MetricModel:
 
 
 def discover() -> list[MetricModel]:
-    from quick_convert.components.speaker import speaker_encoders
-    from quick_convert.components.speaker.speaker_encoders import SpeakerEncoder
+    from quick_convert.components.encoders import speaker as speaker_encoders
+    from quick_convert.components.encoders.speaker import SpeakerEncoder
     from quick_convert.systems import ser
     from quick_convert.systems.ser import SERSystem
 
@@ -146,7 +146,7 @@ def discover() -> list[MetricModel]:
             except Exception as exc:  # lazily imported class whose dependency is missing
                 found.append(MetricModel(name, kind, None, "unavailable", missing_dependency(exc)))
                 continue
-            if inspect.isclass(cls) and issubclass(cls, base) and not inspect.isabstract(cls):
+            if inspect.isclass(cls) and issubclass(cls, base) and not inspect.isabstract(cls) and no_required_args(cls):
                 found.append(MetricModel(name, kind, cls))
     found += [MetricModel(cls.__name__, "f0", cls) for cls in f0_extractors()]
     found.append(MetricModel(UTMOS22Strong.__name__, "mos", UTMOS22Strong))
@@ -155,26 +155,32 @@ def discover() -> list[MetricModel]:
 
 def f0_extractors() -> list[type]:
     """quick-convert feature extractors whose rows are ``ProsodyMeasurements`` (time, F0, voiced, ...)."""
-    from quick_convert.components import feature_extractors
-    from quick_convert.components.feature_extractors.base import BaseFeatureExtractor
-    from quick_convert.components.prosody import ProsodyMeasurements
+    from quick_convert.components import features
+    from quick_convert.components.features.prosody import ProsodyMeasurements
+    from quick_convert.components.resources.base import BaseResourceExtractor
 
     found = []
-    for info in pkgutil.iter_modules(feature_extractors.__path__):
+    for info in pkgutil.walk_packages(features.__path__, f"{features.__name__}."):
         try:
-            module = importlib.import_module(f"{feature_extractors.__name__}.{info.name}")
+            module = importlib.import_module(info.name)
         except Exception as exc:  # module needing a missing extra; it may not even be an F0 extractor
             log.debug("skipping feature extractor module %s: %s", info.name, exc)
             continue
         for _, cls in inspect.getmembers(module, inspect.isclass):
             if (
                 cls.__module__ == module.__name__
-                and issubclass(cls, BaseFeatureExtractor)
+                and issubclass(cls, BaseResourceExtractor)
                 and not inspect.isabstract(cls)
                 and getattr(cls, "COLUMNS", None) == ProsodyMeasurements.COLUMNS
             ):
                 found.append(cls)
     return found + [WorldDioF0Extractor]
+
+
+def no_required_args(cls: type) -> bool:
+    """Skip classes that need a checkpoint path or similar (e.g. SpeechBrainECAPASpeakerEncoder)."""
+    params = inspect.signature(cls).parameters.values()
+    return all(p.default is not p.empty or p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) for p in params)
 
 
 def missing_dependency(exc: Exception) -> str:

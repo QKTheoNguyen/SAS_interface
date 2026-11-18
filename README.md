@@ -8,6 +8,7 @@ You pick a task and a mode, record or upload some speech, adjust the model's set
 | Task | Model | Non-streaming | Streaming | Worker |
 |---|---|---|---|---|
 | Anonymization | ASR-BN (quick-convert): SA-toolkit, via [quick-convert](https://github.com/benluks/quick-convert) | ✅ | — | `quickconvert` |
+| Anonymization | PSST1 (quick-convert): [system description](https://www.voiceprivacychallenge.org/vp2026/docs/T02_system_description.pdf), via [quick-convert](https://github.com/benluks/quick-convert) | ✅ | — | `quickconvert` |
 | Anonymization | ASR-BN (VPC): B5/B6 and the no-VQ checkpoints, as in the [VPC 2026](https://github.com/Voice-Privacy-Challenge/Voice-Privacy-Challenge-2026) recipe | ✅ | — | `vpc` |
 | Anonymization | McAdams (VPC B2), CPU only | ✅ | — | `vpc` |
 | Anonymization | SSL speaker pool (VPC BM1) | ✅ | — | `vpc` |
@@ -69,7 +70,7 @@ every model and task, using the manifest defaults, and writes the outputs to `lo
 ## Architecture
 
 ```
-browser ──HTTP──▶ gateway (FastAPI, serves the UI) ──HTTP──▶ worker "quickconvert"    (torch 2.6: ASR-BN, kNN-VC)
+browser ──HTTP──▶ gateway (FastAPI, serves the UI) ──HTTP──▶ worker "quickconvert"    (torch 2.6: ASR-BN, kNN-VC, PSST1)
                                                     ├──────▶ worker "streamvoiceanon" (torch 2.4: StreamVoiceAnon)
                                                     ├──────▶ worker "tvtsyn"          (torch 2.8: TVTSyn)
                                                     ├──────▶ worker "vpc"             (torch 2.8: VoicePrivacy Challenge 2026 baselines)

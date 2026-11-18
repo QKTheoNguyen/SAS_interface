@@ -1,10 +1,11 @@
 [project]
 name = "sas-worker-quickconvert"
 version = "0.1.0"
-description = "Worker environment for models implemented in quick-convert (ASRBN, kNN-VC)"
+description = "Worker environment for models implemented in quick-convert (ASRBN, kNN-VC, PSST1)"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "quick-convert",
+    # speechbrain + yaapt: PSST1; speechbrain-ser: its emotion recognizer.
+    "quick-convert[speechbrain,speechbrain-ser,yaapt]",
     "sas-worker",
     # Runtime deps of SA-toolkit, which ASRBN loads through torch.hub.
     "scipy",

@@ -1,0 +1,50 @@
+# Read by the gateway (to build the UI) and by the worker named below (to load adapter.py).
+name: psst1
+label: PSST1 (quick-convert)
+description: >-
+  Generates a pseudo-speaker from the source ECAPA x-vector with a flow-matching
+  speaker generator, shifts it to keep the source emotion, then resynthesises
+  soft-HuBERT units + YAAPT F0 with HiFi-GAN. Loaded through quick-convert's
+  PSST1ConversionSystem (~465 MB download on first load).
+links:
+  - label: System description
+    url: https://www.voiceprivacychallenge.org/vp2026/docs/T02_system_description.pdf
+  - label: quick-convert
+    url: https://github.com/benluks/quick-convert
+worker: quickconvert
+modes: [non-streaming]
+
+tasks:
+  anonymization:
+    target_voice: none
+    params:
+      - name: emotion
+        label: Emotion
+        type: choice
+        choices: [auto, neu, hap, sad, ang]
+        default: auto
+        help: Emotion the pseudo-speaker is compensated for. "auto" predicts it with the SpeechBrain IEMOCAP recognizer.
+      - name: seed
+        label: Seed
+        type: int
+        min: -1
+        max: 2147483647
+        default: -1
+        help: Pseudo-speaker sampling seed; the same seed and input give the same voice. -1 picks a new one for each run.
+      - name: w
+        label: Latent mixing (w)
+        type: float
+        min: 0
+        max: 1
+        step: 0.05
+        default: 0.25
+        advanced: true
+        help: Weight of the source x-vector latent mixed into the sampled noise.
+      - name: steps
+        label: Flow steps
+        type: int
+        min: 1
+        max: 50
+        default: 10
+        advanced: true
+        help: Euler integration steps of the flow, in both directions.

@@ -12,7 +12,7 @@ gateway:
   max_stream_seconds: 300  # a live stream stops automatically after this
 
 workers:
-  quickconvert:          # ASR-BN, kNN-VC (torch 2.6)
+  quickconvert:          # ASR-BN, kNN-VC, PSST1 (torch 2.6)
     url: http://127.0.0.1:8101
   streamvoiceanon:       # StreamVoiceAnon (torch 2.4, needs a CUDA GPU)
     url: http://127.0.0.1:8102

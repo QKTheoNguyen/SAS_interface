@@ -11,8 +11,8 @@ class Adapter(ModelAdapter):
     sample_rate = 16000
 
     def load(self, device: torch.device) -> None:
-        # Same model as quick-convert's KNNVCAnonymizer, loaded directly because that
-        # wrapper does not pass a device and torch.hub's knn_vc defaults to CUDA.
+        # Same model as quick-convert's KNNVCConversionSystem, loaded directly because that
+        # wrapper fixes topk=4 and this UI exposes it.
         self.knn = torch.hub.load(
             "bshall/knn-vc", "knn_vc", prematched=True, trust_repo=True, pretrained=True, device=str(device)
         )

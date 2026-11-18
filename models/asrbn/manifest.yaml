@@ -3,7 +3,7 @@ name: asrbn
 label: ASR-BN (quick-convert)
 description: >-
   ASR bottleneck features + F0 resynthesised by HiFi-GAN with a one-hot target
-  speaker. Loaded through quick-convert's ASRBNAnonymizer.
+  speaker. Loaded through quick-convert's ASRBNConversionSystem.
 links:
   - label: quick-convert
     url: https://github.com/benluks/quick-convert
