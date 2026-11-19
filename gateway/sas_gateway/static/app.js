@@ -25,7 +25,7 @@ const state = {
   piiUrl: null, // object URL of the obfuscated output
   piiLiveUrl: null, // object URL of the live-masked stream recording
   piiOptions: null, // last /api/pii/options answer
-  piiLive: { words: [], segments: [] }, // live transcript of the current / last stream
+  piiLive: { lines: new Map(), segments: [] }, // live transcript of the current / last stream (line -> words)
   statsTimer: null,
 };
 
@@ -788,8 +788,8 @@ function updatePiiButton() {
 
   // Live panel (Settings > Advanced)
   const supported = piiLiveSupported();
-  if (!supported) $("live-pii-enable").value = "off";
-  const on = $("live-pii-enable").value === "on";
+  if (!supported) setLivePii(false);
+  const on = livePiiOn();
   $("live-pii-enable").disabled = live || !supported;
   for (const id of ["live-pii-asr", "live-pii-detector", "live-pii-mask", "live-pii-padding", "live-pii-padding-range", "live-pii-holdback-auto"]) {
     $(id).disabled = live;
@@ -804,9 +804,21 @@ function updatePiiButton() {
   $("live-pii-state").textContent = on ? "· on" : "· off";
 }
 
+/** Live obfuscation toggle button: its state is aria-pressed. */
+function livePiiOn() {
+  return $("live-pii-enable").getAttribute("aria-pressed") === "true";
+}
+
+function setLivePii(on) {
+  const button = $("live-pii-enable");
+  button.setAttribute("aria-pressed", String(on));
+  button.classList.toggle("active", on);
+  button.textContent = `Live obfuscation: ${on ? "on" : "off"}`;
+}
+
 /** Live PII options for LiveStream, or null when live obfuscation is off. */
 function livePiiOptions() {
-  if (!livePanelVisible() || $("live-pii-enable").value !== "on" || !piiLiveSupported()) return null;
+  if (!livePanelVisible() || !livePiiOn() || !piiLiveSupported()) return null;
   return {
     asr_model: $("live-pii-asr").value,
     pii_model: $("live-pii-detector").value,
@@ -816,9 +828,22 @@ function livePiiOptions() {
   };
 }
 
+/** Words of the live transcript in order. A revised line (same `line` id) replaced its earlier words. */
+function liveWords() {
+  return [...state.piiLive.lines.values()].flat();
+}
+
 function onLivePii(event) {
   const live = state.piiLive;
-  if (event.type === "pii_words") live.words.push(...event.words);
+  if (event.type === "pii_words") {
+    const batch = new Map();
+    for (const w of event.words) {
+      const key = w.line ?? `batch-${live.lines.size}`; // untagged words are final: their own group
+      if (!batch.has(key)) batch.set(key, []);
+      if (w.word) batch.get(key).push(w);
+    }
+    for (const [key, words] of batch) live.lines.set(key, words);
+  }
   else if (event.type === "pii_segments") live.segments.push(...event.segments);
   else if (event.type === "pii_error") {
     $("pii-live-warning").hidden = false;
@@ -827,7 +852,7 @@ function onLivePii(event) {
   $("pii-card").hidden = false;
   $("pii-live-result").hidden = false;
   renumberSteps();
-  renderTranscript($("pii-live-transcript"), live.words, live.segments);
+  renderTranscript($("pii-live-transcript"), liveWords(), live.segments);
 }
 
 /** After a stream with live PII: the masked recording, leak report and final transcript. */
@@ -856,7 +881,7 @@ function showLivePii(result, model) {
     warning.hidden = false;
     warning.textContent = "Some PII was detected after it had already been played: increase the holdback.";
   }
-  renderTranscript($("pii-live-transcript"), state.piiLive.words, state.piiLive.segments);
+  renderTranscript($("pii-live-transcript"), liveWords(), state.piiLive.segments);
 }
 
 /** Transcript with the words inside a PII segment wrapped in <mark>, one mark per segment. */
@@ -1249,7 +1274,7 @@ async function startStream() {
   const status = $("run-status");
   status.className = "status";
   status.textContent = "Connecting…";
-  state.piiLive = { words: [], segments: [] };
+  state.piiLive = { lines: new Map(), segments: [] };
   $("pii-live-result").hidden = true;
   $("pii-live-player").hidden = true;
   $("pii-live-row").hidden = true;
@@ -1401,7 +1426,8 @@ async function init() {
   $("pii-padding-range").addEventListener("input", () => ($("pii-padding").value = $("pii-padding-range").value));
   $("pii-padding").addEventListener("input", () => ($("pii-padding-range").value = $("pii-padding").value));
   $("run-pii").addEventListener("click", runPii);
-  for (const id of ["live-pii-enable", "live-pii-asr", "live-pii-detector", "live-pii-holdback-auto"]) {
+  $("live-pii-enable").addEventListener("click", () => (setLivePii(!livePiiOn()), updatePiiButton()));
+  for (const id of ["live-pii-asr", "live-pii-detector", "live-pii-holdback-auto"]) {
     $(id).addEventListener("change", updatePiiButton);
   }
   $("live-pii-padding-range").addEventListener("input", () => ($("live-pii-padding").value = $("live-pii-padding-range").value));

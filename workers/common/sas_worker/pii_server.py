@@ -10,7 +10,8 @@ metrics worker's SER model needs 4.x.
 Discovery: concrete classes listed in ``quick_convert.systems.asr.__all__`` (an ``ASRSystem``
 implementing ``transcribe_words``) and ``quick_convert.systems.pii.__all__`` (a ``PIIDetector``),
 whose constructor needs no arguments. A model is live-capable when it implements
-``open_stream()``. Contract: local/PII_requirement.md.
+``open_stream()`` or an adapter in pii_streaming.py covers it (MoonshineASR, any PIIDetector).
+Contract: local/PII_requirement.md.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, W
 from .audio import read_wav, write_wav
 from .obfuscate import MASKS, MAX_PADDING_MS, obfuscate
 from .pii import LivePII, clean_segments, clean_words
+from .pii_streaming import asr_can_stream, pii_can_stream
 
 log = logging.getLogger("sas_worker.pii")
 
@@ -96,7 +98,7 @@ def overrides(cls: type, method: str) -> bool:
     return callable(impl) and not getattr(impl, "__isabstractmethod__", False) and not _is_stub(impl)
 
 
-def discover_package(package: Any, kind: str, accept: Any) -> list[PIIModel]:
+def discover_package(package: Any, kind: str, accept: Any, can_stream: Any) -> list[PIIModel]:
     """Concrete classes in ``package.__all__`` that ``accept`` and need no constructor arguments."""
     found = []
     for name in getattr(package, "__all__", []):
@@ -106,7 +108,7 @@ def discover_package(package: Any, kind: str, accept: Any) -> list[PIIModel]:
             found.append(PIIModel(name, kind, None, "unavailable", missing_dependency(exc)))
             continue
         if inspect.isclass(cls) and not inspect.isabstract(cls) and no_required_args(cls) and accept(cls):
-            found.append(PIIModel(name, kind, cls, streaming=overrides(cls, "open_stream")))
+            found.append(PIIModel(name, kind, cls, streaming=can_stream(cls, overrides(cls, "open_stream"))))
     return found
 
 
@@ -118,7 +120,7 @@ def discover() -> list[PIIModel]:
         from quick_convert.systems.asr import ASRSystem
 
         found += discover_package(
-            asr, "asr", lambda cls: issubclass(cls, ASRSystem) and overrides(cls, "transcribe_words")
+            asr, "asr", lambda cls: issubclass(cls, ASRSystem) and overrides(cls, "transcribe_words"), asr_can_stream
         )
     except Exception as exc:
         log.warning("ASR discovery skipped: %s", missing_dependency(exc))
@@ -126,7 +128,7 @@ def discover() -> list[PIIModel]:
         from quick_convert.systems import pii
         from quick_convert.systems.pii import PIIDetector
 
-        found += discover_package(pii, "pii", lambda cls: issubclass(cls, PIIDetector))
+        found += discover_package(pii, "pii", lambda cls: issubclass(cls, PIIDetector), pii_can_stream)
     except Exception as exc:
         log.warning("PII discovery skipped: %s", missing_dependency(exc))
     return found
@@ -278,12 +280,37 @@ def create_pii_app(device: torch.device) -> FastAPI:
         Errors: worker text {"type": "error", "detail"}, close.
         """
         await ws.accept()
-        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pii-stream")
+        # Detection (ASR + PII) and masking run on separate threads: a slow ASR pass must not delay
+        # the audio. Input chunks queue up for the detection task; output chunks are masked at once.
+        detect_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pii-detect")
+        mask_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pii-mask")
+        send_lock = asyncio.Lock()
+        inputs: asyncio.Queue = asyncio.Queue()
+        detector: asyncio.Task | None = None
         session: LivePII | None = None
         owner = False
 
-        async def call(fn, *args):
+        async def call(pool, fn, *args):
             return await asyncio.get_running_loop().run_in_executor(pool, fn, *args)
+
+        async def send(message: dict | bytes) -> None:
+            async with send_lock:
+                if isinstance(message, bytes):
+                    await ws.send_bytes(message)
+                else:
+                    await ws.send_json(message)
+
+        async def detect() -> None:
+            """Consume input chunks until None; an error ends the session (the gateway fails open)."""
+            try:
+                while (pcm := await inputs.get()) is not None:
+                    for event in await call(detect_pool, session.push_input, pcm):
+                        await send(event)
+            except Exception as exc:
+                log.error("live PII detection failed\n%s", traceback.format_exc())
+                # Reported to the gateway (which fails open); closing ends the receive loop below.
+                await send({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+                await ws.close()
 
         try:
             start = await ws.receive_json()
@@ -294,7 +321,7 @@ def create_pii_app(device: torch.device) -> FastAPI:
                 return
             for m in (asr, pii):
                 if not m.streaming:
-                    await ws.send_json({"type": "error", "detail": f"{m.label} has no streaming mode (open_stream)"})
+                    await ws.send_json({"type": "error", "detail": f"{m.label} has no streaming mode"})
                     return
             mask, padding_ms = start.get("mask", "beep"), float(start.get("padding_ms", 100))
             if mask not in MASKS or not 0 <= padding_ms <= MAX_PADDING_MS:
@@ -306,6 +333,7 @@ def create_pii_app(device: torch.device) -> FastAPI:
             live["busy"] = owner = True
             holdback = start.get("holdback_ms")
             session = await call(
+                detect_pool,
                 LivePII,
                 asr.obj,
                 pii.obj,
@@ -316,11 +344,12 @@ def create_pii_app(device: torch.device) -> FastAPI:
                 padding_ms,
                 None if holdback is None else float(holdback),
             )
-            await ws.send_json({
+            await send({
                 "type": "ready",
                 "holdback_ms": session.holdback_s * 1000,
                 "detector_latency_ms": session.detector_latency_s * 1000,
             })
+            detector = asyncio.create_task(detect())
             while True:
                 message = await ws.receive()
                 if message["type"] == "websocket.disconnect":
@@ -330,32 +359,36 @@ def create_pii_app(device: torch.device) -> FastAPI:
                     kind = int.from_bytes(data[:4], "little")
                     pcm = np.frombuffer(data, dtype="<f4", offset=4)
                     if kind == 0:
-                        for event in await call(session.push_input, pcm):
-                            await ws.send_json(event)
+                        inputs.put_nowait(pcm)
                     else:
-                        await ws.send_bytes((await call(session.push_output, pcm)).astype("<f4").tobytes())
+                        await send((await call(mask_pool, session.push_output, pcm)).astype("<f4").tobytes())
                 elif json.loads(message.get("text") or "{}").get("type") == "stop":
-                    events, tail = await call(session.flush)
+                    inputs.put_nowait(None)
+                    await detector  # every input chunk detected before the final flush
+                    events, tail = await call(detect_pool, session.flush)
                     for event in events:
-                        await ws.send_json(event)
-                    await ws.send_bytes(tail.astype("<f4").tobytes())
-                    await ws.send_json(session.summary())
+                        await send(event)
+                    await send(tail.astype("<f4").tobytes())
+                    await send(session.summary())
                     break
         except WebSocketDisconnect:
             pass
         except Exception as exc:
             log.error("live PII failed\n%s", traceback.format_exc())
             try:
-                await ws.send_json({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+                await send({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
             except Exception:
                 pass
         finally:
+            if detector is not None and not detector.done():
+                detector.cancel()
             if session is not None:
                 try:
-                    await call(session.close)
+                    await call(detect_pool, session.close)
                 except Exception:
                     log.debug(traceback.format_exc())
-            pool.shutdown(wait=False)
+            detect_pool.shutdown(wait=False)
+            mask_pool.shutdown(wait=False)
             if owner:
                 live["busy"] = False
             try:

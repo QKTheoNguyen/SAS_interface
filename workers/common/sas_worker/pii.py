@@ -12,6 +12,7 @@ Live timeline (all times in seconds from stream start):
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import numpy as np
@@ -19,15 +20,20 @@ import soxr
 import torch
 
 from .obfuscate import obfuscate
+from .pii_streaming import open_asr_session, open_pii_session
 
 
 def clean_words(words: list[dict], duration_s: float | None = None) -> list[dict]:
+    """Validate words; keep the optional live tags ``line`` (revisable line id) and ``final``."""
     out = []
     for w in words:
         start, end = max(0.0, float(w["start_s"])), float(w["end_s"])
         if duration_s is not None:
             end = min(duration_s, end)
-        out.append({"word": str(w["word"]), "start_s": start, "end_s": end})
+        word = {"word": str(w["word"]), "start_s": start, "end_s": end}
+        if w.get("line") is not None:
+            word["line"], word["final"] = int(w["line"]), bool(w.get("final", False))
+        out.append(word)
     return out
 
 
@@ -47,11 +53,29 @@ def clean_segments(segments: list[dict]) -> list[dict]:
     return sorted(out, key=lambda s: s["start_s"])
 
 
+def uncovered(start: float, end: float, segments: list[dict]) -> float:
+    """Length of ``[start, end]`` not covered by any of ``segments``."""
+    if end <= start:
+        return 0.0
+    covered, cursor = 0.0, start
+    for s in sorted(segments, key=lambda s: s["start_s"]):
+        lo, hi = max(s["start_s"], cursor), min(s["end_s"], end)
+        if hi > lo:
+            covered += hi - lo
+            cursor = hi
+    return (end - start) - covered
+
+
 class LivePII:
     """One live session: streaming ASR -> streaming PII on the input, held-back masking of the output.
 
     ``push_output`` returns exactly as many samples as it receives, delayed by the holdback
     (the first ``holdback`` samples are silence); ``flush`` returns the held-back remainder.
+    ``push_input`` (detection) and ``push_output`` (masking) may run on different threads, so a
+    slow ASR pass never delays the audio; the shared segment list is guarded by a lock.
+
+    Words tagged with ``line`` belong to a revisable line: a later batch for the same line
+    replaces its earlier words (the UI does the same).
     """
 
     def __init__(
@@ -65,8 +89,9 @@ class LivePII:
         padding_ms: float,
         holdback_ms: float | None = None,
     ):
-        self.asr_session = asr.open_stream()
-        self.pii_session = pii.open_stream()
+        self.asr_session = open_asr_session(asr)
+        self.pii_session = open_pii_session(pii)
+        self.lock = threading.Lock()
         self.asr_sr = int(getattr(asr, "sr", 16000))
         self.resampler = (
             soxr.ResampleStream(input_sample_rate, self.asr_sr, 1, dtype="float32", quality="HQ")
@@ -98,14 +123,16 @@ class LivePII:
             segments += list(self.pii_session.flush())
         segments = clean_segments(segments)
         if segments:
-            sent_until = self.emitted / self.out_sr  # output time already sent to the listener
-            for s in segments:
-                start, end = s["start_s"] + self.model_delay_s, s["end_s"] + self.model_delay_s
-                self.segments.append({"start_s": start, "end_s": end})
-                leak = min(end, sent_until) - start
-                if leak > 0:
-                    self.leaked_s += leak
-                    self.leaked_segments += 1
+            with self.lock:
+                sent_until = self.emitted / self.out_sr  # output time already sent to the listener
+                for s in segments:
+                    start, end = s["start_s"] + self.model_delay_s, s["end_s"] + self.model_delay_s
+                    # Leaked = already sent AND not masked by an earlier segment (padding aside).
+                    leak = uncovered(start, min(end, sent_until), self.segments)
+                    self.segments.append({"start_s": start, "end_s": end})
+                    if leak > 0:
+                        self.leaked_s += leak
+                        self.leaked_segments += 1
             events.append({"type": "pii_segments", "segments": segments})
         return events
 
@@ -127,9 +154,10 @@ class LivePII:
 
     def _emit(self, n: int) -> np.ndarray:
         out, self.buffer = self.buffer[:n], self.buffer[n:]
-        masked = obfuscate(out, self.out_sr, self.segments, self.mask, self.padding_ms, start_s=self.emitted / self.out_sr)
-        self.emitted += len(out)
-        return masked
+        with self.lock:
+            segments, start = list(self.segments), self.emitted
+            self.emitted += len(out)  # counted as sent now: a segment arriving meanwhile is a leak
+        return obfuscate(out, self.out_sr, segments, self.mask, self.padding_ms, start_s=start / self.out_sr)
 
     def flush(self) -> tuple[list[dict], np.ndarray]:
         """End of stream: final words / segments, then the held-back remainder of the output."""

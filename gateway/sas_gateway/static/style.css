@@ -217,3 +217,5 @@ figcaption { font-weight: 600; }
 #live-pii-panel { border-top: 1px solid var(--border); padding-top: 4px; margin-top: 8px; }
 #live-pii-panel select { width: 100%; }
 #live-pii-panel summary { color: var(--text); font-weight: 600; }
+button.toggle { width: 100%; }
+button.toggle.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
