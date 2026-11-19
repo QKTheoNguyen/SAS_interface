@@ -12,7 +12,7 @@ from sas_worker import ModelAdapter, StreamSession
 from sas_worker.audio import read_wav
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# Same LibriSpeech train-clean-360 pseudo-speakers as StreamVoiceAnon anonymization.
+# Same LibriSpeech pseudo-speakers as StreamVoiceAnon anonymization.
 REFERENCES_DIR = REPO_ROOT / "models" / "streamvoiceanon" / "references"
 HF_REPO = "warisqr007/TVTSyn"
 # TVTSyn keeps its SpeechBrain x-vector + ECAPA models in ~/.cache by default; keep them with the HF cache.
@@ -35,6 +35,8 @@ class Adapter(ModelAdapter):
             p.stem: self._embed([read_wav(p.read_bytes(), self.sample_rate)])
             for p in sorted(REFERENCES_DIR.glob("*.flac"))
         }
+        if not self.pool:
+            raise RuntimeError(f"No pseudo-speakers in {REFERENCES_DIR}. Build them with scripts/build_reference_pool.py.")
         if device.type != "cuda":
             self.warning = "Running on CPU: streaming may fall behind real time on a busy node."
 

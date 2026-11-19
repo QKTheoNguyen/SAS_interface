@@ -11,3 +11,8 @@ README_perso.md
 hub/
 # SpeechBrain IEMOCAP SER (PSST1) writes its wav2vec2 cache to this relative path
 wav2vec2_checkpoints/
+# Downloaded datasets
+data/
+# Pseudo-speaker pool, built locally by scripts/build_reference_pool.py
+models/streamvoiceanon/references/*
+!models/streamvoiceanon/references/README.md

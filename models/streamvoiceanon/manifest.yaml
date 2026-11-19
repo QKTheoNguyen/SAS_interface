@@ -10,6 +10,7 @@ links:
     url: https://github.com/Plachtaa/StreamVoiceAnon
   - label: Paper
     url: https://arxiv.org/abs/2601.13948
+speaker_pool: streamvoiceanon/references   # pseudo-speaker clips + speakers.json, relative to models/
 worker: streamvoiceanon
 modes: [non-streaming, streaming]
 
@@ -36,11 +37,14 @@ tasks:
     params:
       - name: reference_speaker
         label: Pseudo-speaker
-        type: choice
+        type: speaker_map
         choices_from: worker
         extra_choices: [random]
         default: random
-        help: Reference voice from the bundled LibriSpeech train-clean-360 pool. "random" picks a new one for each run.
+        help: >-
+          Each point is a LibriSpeech voice, placed by pitch and brightness relative to its gender.
+          Click a point to hear it and select it. "Random" picks a new voice for each run.
+          Lower alpha moves the output further from the selected voice.
       - name: alpha
         label: Alpha (speaker embedding noise mixing)
         type: float

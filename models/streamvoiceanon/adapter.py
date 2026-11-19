@@ -68,6 +68,8 @@ class Adapter(ModelAdapter):
         # because their non-streaming inputs change length every request (= a recompile each time).
         self.wrapper = InferenceWrapper(CONFIG, CHECKPOINT, compile_ar=True)
         self.references = {p.stem: p for p in sorted(REFERENCES_DIR.glob("*.flac"))}
+        if not self.references:
+            raise RuntimeError(f"No pseudo-speakers in {REFERENCES_DIR}. Build them with scripts/build_reference_pool.py.")
 
         w = self.wrapper
         compile_kwargs = dict(fullgraph=True, backend="inductor", mode="reduce-overhead")

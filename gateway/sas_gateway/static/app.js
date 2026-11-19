@@ -278,6 +278,118 @@ async function choicesFor(model, param) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Speaker map: pseudo-speakers placed by pitch (x) and brightness (y), from the
+// model's speakers.json (scripts/build_reference_pool.py). One gender at a time,
+// because coordinates are z-scored within each gender.
+// ---------------------------------------------------------------------------
+
+const PREVIEW_SECONDS = 3;
+const preview = { audio: new Audio(), timer: null };
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function playPreview(url) {
+  clearTimeout(preview.timer);
+  preview.audio.src = url;
+  preview.audio.play().catch(() => {});
+  preview.timer = setTimeout(() => preview.audio.pause(), PREVIEW_SECONDS * 1000);
+}
+
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+async function createSpeakerMap(model, param, value, update) {
+  const key = `${model.name}/speakers`;
+  state.choicesCache[key] ??= fetchJson(`/api/models/${model.name}/speakers`);
+  let meta;
+  try {
+    meta = await state.choicesCache[key];
+  } catch (err) {
+    delete state.choicesCache[key];
+    const p = Object.assign(document.createElement("p"), { className: "warning", textContent: err.message });
+    return p;
+  }
+
+  const speakers = meta.speakers;
+  const root = document.createElement("div");
+  root.className = "speaker-map";
+  let selected = value;
+  let gender = speakers.find((s) => s.id === selected)?.gender || "F";
+
+  // Shared scale for both genders so the plot does not jump when toggling.
+  const W = 400, H = 280, PAD = 22;
+  const xs = speakers.map((s) => s.x), ys = speakers.map((s) => s.y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const px = (x) => PAD + ((x - x0) / (x1 - x0 || 1)) * (W - 2 * PAD);
+  const py = (y) => H - PAD - ((y - y0) / (y1 - y0 || 1)) * (H - 2 * PAD);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "row";
+  const toggle = document.createElement("div");
+  toggle.className = "segmented";
+  const radioName = `speaker-gender-${param.name}`;
+  for (const [id, text] of [["F", "Female"], ["M", "Male"]]) {
+    const input = Object.assign(document.createElement("input"), { type: "radio", name: radioName, value: id, checked: gender === id });
+    input.addEventListener("change", () => ((gender = id), draw()));
+    const lab = document.createElement("label");
+    lab.append(input, text);
+    toggle.append(lab);
+  }
+  const random = Object.assign(document.createElement("button"), { type: "button", className: "secondary", textContent: "Random" });
+  random.addEventListener("click", () => select("random"));
+  toolbar.append(toggle, random);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "group", "aria-label": "Pseudo-speaker map" });
+  const status = document.createElement("div");
+  status.className = "speaker-status";
+
+  function select(id, play = false) {
+    selected = id;
+    update(id);
+    if (play) playPreview(`/api/models/${model.name}/speakers/${encodeURIComponent(id)}.flac`);
+    draw();
+  }
+
+  function draw() {
+    const axes = [
+      svgEl("line", { x1: px(0), x2: px(0), y1: PAD / 2, y2: H - PAD / 2, class: "axis" }),
+      svgEl("line", { x1: PAD / 2, x2: W - PAD / 2, y1: py(0), y2: py(0), class: "axis" }),
+    ];
+    const labels = [
+      [4, H - 6, "start", "← lower pitch"],
+      [W - 4, H - 6, "end", "higher pitch →"],
+      [4, 12, "start", "↑ brighter"],
+      [4, H - 20, "start", "↓ darker"],
+    ].map(([x, y, anchor, text]) => Object.assign(svgEl("text", { x, y, "text-anchor": anchor, class: "axis-label" }), { textContent: text }));
+    const dots = speakers.filter((s) => s.gender === gender).map((s) => {
+      const dot = svgEl("circle", {
+        cx: px(s.x), cy: py(s.y), r: s.id === selected ? 8 : 5.5, tabindex: 0, role: "button",
+        class: s.id === selected ? "dot selected" : "dot", "aria-label": `${s.id}, ${s.f0_hz} Hz`,
+      });
+      dot.append(Object.assign(svgEl("title"), { textContent: `${s.id} · ${s.f0_hz} Hz` }));
+      dot.addEventListener("click", () => select(s.id, true));
+      dot.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") (e.preventDefault(), select(s.id, true));
+      });
+      return dot;
+    });
+    svg.replaceChildren(...axes, ...labels, ...dots);
+
+    random.classList.toggle("active", selected === "random");
+    const s = speakers.find((sp) => sp.id === selected);
+    status.textContent = s
+      ? `Selected: ${s.id} · median F0 ${s.f0_hz} Hz${s.gender !== gender ? ` (${s.gender === "F" ? "female" : "male"} map)` : ""}`
+      : "Selected: random voice, a new one for each run.";
+  }
+
+  draw();
+  root.append(toolbar, svg, status);
+  return root;
+}
+
 async function renderParam(model, param) {
   const wrap = document.createElement("div");
   wrap.className = "param";
@@ -300,6 +412,9 @@ async function renderParam(model, param) {
     for (const c of await choicesFor(model, param)) select.add(new Option(c, c, false, String(c) === String(value)));
     select.addEventListener("change", () => update(select.value));
     wrap.append(select);
+  } else if (param.type === "speaker_map") {
+    label.removeAttribute("for");
+    wrap.append(await createSpeakerMap(model, param, value, update));
   } else if (param.type === "float" || param.type === "int") {
     const box = document.createElement("div");
     box.className = "range";

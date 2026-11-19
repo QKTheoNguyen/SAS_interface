@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import soundfile as sf
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import WebSocketException
@@ -111,6 +111,31 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         except httpx.HTTPError as exc:
             raise HTTPException(502, f"Worker unreachable: {exc}") from exc
         return await forward(r)
+
+    def speaker_pool(name: str) -> tuple[Path, dict[str, Any]]:
+        """Pool folder and parsed speakers.json of a model (built by scripts/build_reference_pool.py)."""
+        pool = manifest_or_404(name).get("speaker_pool")
+        if not pool:
+            raise HTTPException(404, f"Model {name!r} has no speaker pool")
+        folder = config.models_dir / pool
+        try:
+            return folder, json.loads((folder / "speakers.json").read_text())
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                404, f"No speakers.json in {folder}. Build the pool with scripts/build_reference_pool.py."
+            ) from exc
+
+    @app.get("/api/models/{name}/speakers")
+    def list_speakers(name: str) -> dict:
+        return speaker_pool(name)[1]
+
+    @app.get("/api/models/{name}/speakers/{speaker}.flac")
+    def speaker_audio(name: str, speaker: str) -> FileResponse:
+        folder, meta = speaker_pool(name)
+        # Only ids listed in speakers.json, so the path cannot leave the pool folder.
+        if speaker not in {s["id"] for s in meta["speakers"]}:
+            raise HTTPException(404, f"Unknown pseudo-speaker {speaker!r}")
+        return FileResponse(folder / f"{speaker}.flac", media_type="audio/flac")
 
     def check_duration(data: bytes, label: str) -> None:
         try:
