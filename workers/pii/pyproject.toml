@@ -1,0 +1,22 @@
+[project]
+name = "sas-worker-pii"
+version = "0.1.0"
+description = "Worker environment for PII detection and obfuscation (ASR + PII detectors from quick-convert)"
+requires-python = ">=3.11,<3.12"
+# Separate from the metrics worker: the privacy filter needs transformers>=5.6, while the
+# metrics worker's Odyssey SER needs transformers<5. Each quick-convert extra added here makes
+# more ASR models / PII detectors appear in section 8 and the live PII panel.
+dependencies = [
+    "quick-convert[moonshine,privacy-filter]",
+    "sas-worker",
+]
+
+[tool.uv]
+package = false
+# quick-convert pins torch 2.6, which has no kernels for RTX 50xx (sm_120). 2.8 wheels ship cu128.
+# Same overrides as quick-convert's own (hydra / omegaconf), which do not propagate to this project.
+override-dependencies = ["torch==2.8.0", "torchaudio==2.8.0", "hydra-core==1.3.2", "omegaconf==2.3.0"]
+
+[tool.uv.sources]
+quick-convert = { path = "../../third_party/quick-convert", editable = true }
+sas-worker = { path = "../common", editable = true }

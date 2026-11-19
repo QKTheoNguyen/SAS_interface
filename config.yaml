@@ -22,3 +22,5 @@ workers:
   #   url: http://127.0.0.1:8104
   metrics:               # metrics panel: speaker encoders + SER from quick-convert
     url: http://127.0.0.1:8103
+  pii:                   # section 8 + live PII panel: Moonshine ASR + OpenAI Privacy Filter (transformers 5)
+    url: http://127.0.0.1:8106

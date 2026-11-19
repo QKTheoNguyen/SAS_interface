@@ -3,8 +3,9 @@
     python -m sas_worker serve    --worker quickconvert --port 8101
     python -m sas_worker prefetch --worker quickconvert
 
-The worker named ``metrics`` is special: it serves the metrics panel
-(sas_worker/metrics.py) instead of models from models/*/manifest.yaml.
+Two worker names are special and serve a service instead of models from models/*/manifest.yaml:
+``metrics`` (the metrics panel, sas_worker/metrics.py) and ``pii`` (PII detection and
+obfuscation, sas_worker/pii_server.py).
 """
 
 from __future__ import annotations
@@ -18,12 +19,13 @@ import torch
 from .registry import DEFAULT_MODELS_DIR, adapters_for_worker
 
 METRICS_WORKER = "metrics"
+PII_WORKER = "pii"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sas_worker")
     parser.add_argument("command", choices=["serve", "prefetch"])
-    parser.add_argument("--worker", required=True, help="Worker name, as in manifest.yaml `worker:` (or `metrics`)")
+    parser.add_argument("--worker", required=True, help="Worker name, as in manifest.yaml `worker:` (or `metrics` / `pii`)")
     parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8101)
@@ -42,6 +44,17 @@ def main() -> None:
         import uvicorn
 
         uvicorn.run(metrics.create_metrics_app(device), host=args.host, port=args.port)
+        return
+
+    if args.worker == PII_WORKER:
+        from . import pii_server
+
+        if args.command == "prefetch":
+            pii_server.prefetch()
+            return
+        import uvicorn
+
+        uvicorn.run(pii_server.create_pii_app(device), host=args.host, port=args.port)
         return
 
     adapters = adapters_for_worker(args.worker, args.models_dir)

@@ -711,7 +711,7 @@ async function computeMetrics() {
  *  (live controls); in non-streaming mode once there is a result. */
 /** Show / hide section 8 (once there is a result) and clear its results. */
 function resetPii() {
-  const show = !!state.config.metrics && state.task === "anonymization" && !!state.lastResult;
+  const show = !!state.config.pii && state.task === "anonymization" && !!state.lastResult;
   $("pii-card").hidden = !show;
   $("pii-result").hidden = true;
   $("pii-live-result").hidden = true;
@@ -726,7 +726,7 @@ function resetPii() {
 
 /** Live PII panel (Settings > Advanced): streaming anonymization with a metrics worker. */
 function livePanelVisible() {
-  return !!state.config.metrics && state.task === "anonymization" && state.mode === "streaming";
+  return !!state.config.pii && state.task === "anonymization" && state.mode === "streaming";
 }
 
 /** Fill a model dropdown. With `streaming`, models without open_stream() are listed but disabled. */

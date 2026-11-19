@@ -31,6 +31,7 @@ class RevalidatedStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 METRICS_WORKER = "metrics"  # serves /metrics/* instead of models (workers/common/sas_worker/metrics.py)
+PII_WORKER = "pii"  # serves /pii/* (workers/common/sas_worker/pii_server.py), own env: workers/pii
 # Conversions of a 60 s clip on a slow GPU (or CPU) can take minutes.
 CONVERT_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 
@@ -81,6 +82,7 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
             "max_input_seconds": config.max_input_seconds,
             "max_stream_seconds": config.max_stream_seconds,
             "metrics": METRICS_WORKER in config.workers,
+            "pii": PII_WORKER in config.workers,
         }
 
     @app.get("/api/models")
@@ -198,12 +200,17 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
             raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
         return await forward(r)
 
+    def pii_url() -> str:
+        if PII_WORKER not in config.workers:
+            raise HTTPException(404, "No PII worker configured (add `pii` under `workers` in config.yaml)")
+        return config.workers[PII_WORKER]
+
     @app.get("/api/pii/options")
     async def pii_options() -> Response:
         try:
-            r = await client.get(f"{metrics_url()}/pii/options", timeout=5.0)
+            r = await client.get(f"{pii_url()}/pii/options", timeout=5.0)
         except httpx.HTTPError as exc:
-            raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
+            raise HTTPException(502, f"PII worker unreachable: {exc}") from exc
         return await forward(r)
 
     @app.post("/api/pii/obfuscate")
@@ -216,7 +223,7 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         padding_ms: float = Form(100.0),
         offset_s: float = Form(0.0),
     ) -> Response:
-        url = metrics_url()
+        url = pii_url()
         files = [
             ("source", ("source.wav", await source.read(), "audio/wav")),
             ("output", ("output.wav", await output.read(), "audio/wav")),
@@ -231,7 +238,7 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         try:
             r = await client.post(f"{url}/pii/obfuscate", data=data, files=files, timeout=CONVERT_TIMEOUT)
         except httpx.HTTPError as exc:
-            raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
+            raise HTTPException(502, f"PII worker unreachable: {exc}") from exc
         return await forward(r)
 
     @app.post("/api/metrics/compute")
@@ -271,7 +278,7 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         """Relay frames both ways between the browser and the worker (protocol in sas_worker/server.py).
 
         Live PII obfuscation: when the browser's start message carries ``pii`` options, the
-        gateway also opens the metrics worker's ``/pii/stream`` (protocol in sas_worker/metrics.py)
+        gateway also opens the PII worker's ``/pii/stream`` (protocol in sas_worker/pii_server.py)
         once the model is ready. Input chunks are copied to it, raw output chunks go through it,
         and each output frame sent to the browser becomes
         ``uint32 seq + float32 ms + uint32 n_raw + float32 raw[n_raw] + float32 masked[...]``.
@@ -330,11 +337,11 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
 
         async def pii_open(ready: dict[str, Any]) -> dict[str, Any]:
             """Start the PII session for a ready VC stream; return what to tell the browser."""
-            if METRICS_WORKER not in config.workers:
-                return {"error": "No metrics worker configured: live PII obfuscation is off."}
-            pii_url = config.workers[METRICS_WORKER].replace("http", "ws", 1) + "/pii/stream"
+            if PII_WORKER not in config.workers:
+                return {"error": "No PII worker configured: live PII obfuscation is off."}
+            stream_url = config.workers[PII_WORKER].replace("http", "ws", 1) + "/pii/stream"
             try:
-                conn = await ws_connect(pii_url, max_size=None, ping_interval=None)
+                conn = await ws_connect(stream_url, max_size=None, ping_interval=None)
                 await conn.send(json.dumps({
                     "type": "start",
                     **{k: pii_opts.get(k) for k in ("asr_model", "pii_model", "mask", "padding_ms", "holdback_ms")},
