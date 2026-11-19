@@ -42,20 +42,25 @@ export class LiveStream {
    * @param {File|null} opts.file   stream this file at real-time pace instead of the mic
    * @param {boolean} opts.monitor  play the output while streaming
    * @param {number} opts.maxSeconds
-   * @param {(result) => void} opts.onEnd   called once with {input, output, stats} or {error}
+   * @param {object|null} opts.pii  live PII obfuscation {asr_model, pii_model, mask, padding_ms, holdback_ms}
+   * @param {(event) => void} opts.onPii  live PII events: pii_words, pii_segments, pii_error, pii_end
+   * @param {(result) => void} opts.onEnd   called once with {input, output, masked?, pii?, stats} or {error}
    */
   constructor(opts) {
     this.opts = opts;
     this.seq = 0;
     this.sendTimes = new Map();
     this.inputChunks = [];
-    this.outputChunks = [];
+    this.outputChunks = []; // raw model output
+    this.maskedChunks = []; // live PII-masked output (what the listener heard), held back by the PII holdback
+    this.piiSummary = null;
+    this.piiError = null;
     this.playAt = 0;
     this.stopping = false;
     this.finished = false;
     this.stats = {
       algorithmicMs: 0, chunkMs: 0, computeMs: 0, computeAvgMs: 0, roundTripMs: 0,
-      bufferMs: 0, deviceMs: 0, underruns: 0, sentSeconds: 0, rtf: 0, totalMs: 0,
+      bufferMs: 0, deviceMs: 0, underruns: 0, sentSeconds: 0, rtf: 0, totalMs: 0, piiHoldbackMs: 0,
     };
   }
 
@@ -69,7 +74,9 @@ export class LiveStream {
       this.ws.onerror = () => reject(new Error("Cannot open the stream connection to the gateway."));
     });
 
-    this.ws.send(JSON.stringify({ type: "start", task, params, n_targets: targets.length }));
+    const start = { type: "start", task, params, n_targets: targets.length };
+    if (this.opts.pii) start.pii = this.opts.pii;
+    this.ws.send(JSON.stringify(start));
     for (const blob of targets) this.ws.send(await blob.arrayBuffer());
 
     const ready = await new Promise((resolve, reject) => {
@@ -82,6 +89,10 @@ export class LiveStream {
     });
     this.ready = ready;
     this.stats.algorithmicMs = ready.algorithmic_latency_ms;
+    // Output frames carry raw + masked audio whenever PII was requested, even if it failed (masked = raw).
+    this.piiFrames = !!this.opts.pii;
+    if (ready.pii?.error) this.notePiiError(ready.pii.error);
+    this.stats.piiHoldbackMs = ready.pii?.holdback_ms || 0;
     this.stats.chunkMs = (ready.chunk_samples / ready.sample_rate) * 1000;
     this.ws.onmessage = (e) => this.onMessage(e.data);
     this.ws.onclose = () => this.finish();
@@ -162,12 +173,26 @@ export class LiveStream {
       const msg = JSON.parse(data);
       if (msg.type === "end") this.finish();
       else if (msg.type === "error") this.finish(new Error(msg.detail));
+      else if (msg.type === "pii_error") this.notePiiError(msg.detail);
+      else if (msg.type.startsWith("pii_")) {
+        if (msg.type === "pii_end") this.piiSummary = msg;
+        this.opts.onPii?.(msg);
+      }
       return;
     }
     const view = new DataView(data);
     const seq = view.getUint32(0, true);
     const computeMs = view.getFloat32(4, true);
-    const pcm = new Float32Array(data, 8);
+    let pcm = new Float32Array(data, 8);
+    let heard = pcm;
+    if (this.piiFrames) {
+      const nRaw = view.getUint32(8, true);
+      pcm = new Float32Array(data, 12, nRaw);
+      heard = new Float32Array(data, 12 + 4 * nRaw);
+      this.maskedChunks.push(heard);
+      if (this.opts.monitor) this.play(heard);
+      if (!nRaw) return; // held-back remainder sent at stop
+    }
     const now = performance.now();
     const s = this.stats;
     if (this.sendTimes.has(seq)) {
@@ -179,8 +204,13 @@ export class LiveStream {
     s.computeAvgMs = s.computeAvgMs ? s.computeAvgMs + EMA * (computeMs - s.computeAvgMs) : computeMs;
     s.rtf = s.computeAvgMs / s.chunkMs;
     this.outputChunks.push(pcm);
-    if (this.opts.monitor) this.play(pcm);
-    s.totalMs = s.chunkMs + s.roundTripMs + s.bufferMs + s.algorithmicMs + s.deviceMs;
+    if (this.opts.monitor && !this.piiFrames) this.play(heard);
+    s.totalMs = s.chunkMs + s.roundTripMs + s.bufferMs + s.algorithmicMs + s.piiHoldbackMs + s.deviceMs;
+  }
+
+  notePiiError(detail) {
+    this.piiError = detail;
+    this.opts.onPii?.({ type: "pii_error", detail });
   }
 
   play(pcm) {
@@ -237,11 +267,18 @@ export class LiveStream {
       this.opts.onEnd({ error });
       return;
     }
-    this.opts.onEnd({
+    const result = {
       error,
       input: encodeWav(concat(this.inputChunks), this.ready.sample_rate),
       output: encodeWav(concat(this.outputChunks), this.ready.output_sample_rate),
       stats: { ...this.stats },
-    });
+    };
+    if (this.piiFrames) {
+      // Drop the leading silence of the holdback so the masked recording lines up with the raw one.
+      const hold = Math.round((this.stats.piiHoldbackMs / 1000) * this.ready.output_sample_rate);
+      result.masked = encodeWav(concat(this.maskedChunks).subarray(hold), this.ready.output_sample_rate);
+      result.pii = { summary: this.piiSummary, error: this.piiError };
+    }
+    this.opts.onEnd(result);
   }
 }

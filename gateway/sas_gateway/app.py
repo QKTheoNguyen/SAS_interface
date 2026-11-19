@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import struct
+from collections import deque
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -212,13 +214,20 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         pii_model: str = Form(...),
         mask: str = Form("beep"),
         padding_ms: float = Form(100.0),
+        offset_s: float = Form(0.0),
     ) -> Response:
         url = metrics_url()
         files = [
             ("source", ("source.wav", await source.read(), "audio/wav")),
             ("output", ("output.wav", await output.read(), "audio/wav")),
         ]
-        data = {"asr_model": asr_model, "pii_model": pii_model, "mask": mask, "padding_ms": str(padding_ms)}
+        data = {
+            "asr_model": asr_model,
+            "pii_model": pii_model,
+            "mask": mask,
+            "padding_ms": str(padding_ms),
+            "offset_s": str(offset_s),
+        }
         try:
             r = await client.post(f"{url}/pii/obfuscate", data=data, files=files, timeout=CONVERT_TIMEOUT)
         except httpx.HTTPError as exc:
@@ -259,7 +268,17 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
 
     @app.websocket("/api/models/{name}/stream")
     async def stream(ws: WebSocket, name: str) -> None:
-        """Relay frames both ways between the browser and the worker (protocol in sas_worker/server.py)."""
+        """Relay frames both ways between the browser and the worker (protocol in sas_worker/server.py).
+
+        Live PII obfuscation: when the browser's start message carries ``pii`` options, the
+        gateway also opens the metrics worker's ``/pii/stream`` (protocol in sas_worker/metrics.py)
+        once the model is ready. Input chunks are copied to it, raw output chunks go through it,
+        and each output frame sent to the browser becomes
+        ``uint32 seq + float32 ms + uint32 n_raw + float32 raw[n_raw] + float32 masked[...]``.
+        The ready message gains ``pii: {holdback_ms, detector_latency_ms}`` or ``pii: {error}``.
+        If the PII service fails the stream goes on unmasked (fail open: masked = raw) and the
+        browser gets ``{"type": "pii_error", "detail"}``.
+        """
         await ws.accept()
         manifest = manifests.get(name)
         if manifest is None or "streaming" not in manifest["modes"]:
@@ -267,22 +286,131 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
             await ws.close()
             return
         url = config.workers[manifest["worker"]].replace("http", "ws", 1) + f"/models/{name}/stream"
+        pii_opts: dict[str, Any] | None = None
+        pii: dict[str, Any] = {"ws": None, "reader": None, "pending": deque(), "last_header": b"\0" * 8}
+
+        def pii_frame(header: bytes, raw: bytes, masked: bytes) -> bytes:
+            return header + struct.pack("<I", len(raw) // 4) + raw + masked
+
+        async def pii_fail(detail: str) -> None:
+            """Fail open: drop the PII session, release frames still waiting for their masked version."""
+            conn, pii["ws"] = pii["ws"], None
+            if conn is None:
+                return
+            await ws.send_json({"type": "pii_error", "detail": detail})
+            while pii["pending"]:
+                header, raw = pii["pending"].popleft()
+                await ws.send_bytes(pii_frame(header, raw, raw))
+            try:
+                await conn.close()
+            except Exception:
+                pass
+
+        async def pii_reader(conn) -> None:
+            try:
+                async for message in conn:
+                    if isinstance(message, bytes):
+                        if pii["pending"]:
+                            header, raw = pii["pending"].popleft()
+                        else:  # held-back remainder sent at stop
+                            header, raw = pii["last_header"][:4] + struct.pack("<f", 0.0), b""
+                        await ws.send_bytes(pii_frame(header, raw, message))
+                        continue
+                    event = json.loads(message)
+                    if event.get("type") == "error":
+                        raise RuntimeError(event.get("detail"))
+                    await ws.send_text(message)
+                    if event.get("type") == "pii_end":
+                        return
+                raise RuntimeError("PII service closed the connection")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await pii_fail(f"Live PII obfuscation stopped, output is no longer masked: {exc}")
+
+        async def pii_open(ready: dict[str, Any]) -> dict[str, Any]:
+            """Start the PII session for a ready VC stream; return what to tell the browser."""
+            if METRICS_WORKER not in config.workers:
+                return {"error": "No metrics worker configured: live PII obfuscation is off."}
+            pii_url = config.workers[METRICS_WORKER].replace("http", "ws", 1) + "/pii/stream"
+            try:
+                conn = await ws_connect(pii_url, max_size=None, ping_interval=None)
+                await conn.send(json.dumps({
+                    "type": "start",
+                    **{k: pii_opts.get(k) for k in ("asr_model", "pii_model", "mask", "padding_ms", "holdback_ms")},
+                    "input_sample_rate": ready["sample_rate"],
+                    "output_sample_rate": ready["output_sample_rate"],
+                    "model_delay_ms": ready.get("algorithmic_latency_ms", 0),
+                }))
+                reply = json.loads(await asyncio.wait_for(conn.recv(), timeout=60))
+            except (OSError, WebSocketException, asyncio.TimeoutError, ValueError) as exc:
+                return {"error": f"Live PII obfuscation unavailable: {exc or type(exc).__name__}"}
+            if reply.get("type") != "ready":
+                await conn.close()
+                return {"error": f"Live PII obfuscation unavailable: {reply.get('detail', reply)}"}
+            pii["ws"] = conn
+            pii["reader"] = asyncio.create_task(pii_reader(conn))
+            return {"holdback_ms": reply["holdback_ms"], "detector_latency_ms": reply["detector_latency_ms"]}
+
         try:
             async with ws_connect(url, max_size=None, ping_interval=None) as upstream:
+                streaming = False  # True once the worker is ready: binary frames are audio chunks
 
                 async def browser_to_worker() -> None:
+                    nonlocal pii_opts
                     while True:
                         message = await ws.receive()
                         if message["type"] == "websocket.disconnect":
                             return
-                        await upstream.send(message["bytes"] if message.get("bytes") is not None else message["text"])
+                        data = message.get("bytes")
+                        if data is None:
+                            text = message["text"]
+                            if pii_opts is None and not streaming:
+                                start = json.loads(text)
+                                if start.get("type") == "start" and start.get("pii"):
+                                    pii_opts = start.pop("pii")
+                                    text = json.dumps(start)
+                            await upstream.send(text)
+                            continue
+                        await upstream.send(data)
+                        if streaming and pii["ws"] is not None:
+                            try:
+                                await pii["ws"].send(struct.pack("<I", 0) + data[4:])
+                            except (OSError, WebSocketException) as exc:
+                                await pii_fail(f"Live PII obfuscation stopped, output is no longer masked: {exc}")
 
                 async def worker_to_browser() -> None:
+                    nonlocal streaming
                     async for message in upstream:
                         if isinstance(message, bytes):
-                            await ws.send_bytes(message)
-                        else:
-                            await ws.send_text(message)
+                            if pii_opts is None:
+                                await ws.send_bytes(message)
+                                continue
+                            header, raw = message[:8], message[8:]
+                            pii["last_header"] = header
+                            if pii["ws"] is None:  # requested but unavailable or failed: fail open
+                                await ws.send_bytes(pii_frame(header, raw, raw))
+                                continue
+                            pii["pending"].append((header, raw))
+                            try:
+                                await pii["ws"].send(struct.pack("<I", 1) + raw)
+                            except (OSError, WebSocketException) as exc:
+                                await pii_fail(f"Live PII obfuscation stopped, output is no longer masked: {exc}")
+                            continue
+                        event = json.loads(message)
+                        if event.get("type") == "ready":
+                            streaming = True
+                            if pii_opts is not None:
+                                event["pii"] = await pii_open(event)
+                                message = json.dumps(event)
+                        elif event.get("type") == "end" and pii["ws"] is not None:
+                            # Flush the held-back output before telling the browser the stream ended.
+                            try:
+                                await pii["ws"].send(json.dumps({"type": "stop"}))
+                                await asyncio.wait_for(asyncio.shield(pii["reader"]), timeout=30)
+                            except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
+                                await pii_fail(f"Live PII flush failed: {exc or 'timeout'}")
+                        await ws.send_text(message)
 
                 tasks = [asyncio.create_task(browser_to_worker()), asyncio.create_task(worker_to_browser())]
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -294,6 +422,13 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
             except Exception:
                 pass
         finally:
+            if pii["reader"] is not None:
+                pii["reader"].cancel()
+            if pii["ws"] is not None:
+                try:
+                    await pii["ws"].close()
+                except Exception:
+                    pass
             try:
                 await ws.close()
             except Exception:

@@ -1,0 +1,154 @@
+"""PII detection glue shared by the offline endpoint and the live session.
+
+Contract of the quick-convert modules: local/PII_requirement.md.
+
+Live timeline (all times in seconds from stream start):
+- source time: the VC input = what ASR / PII see. Words and segments are in source time.
+- output time: the raw VC output. A segment at source time t sits at t + model_delay_s.
+- the listener gets the output held back by ``holdback_s``, so a segment returned up to
+  ``holdback_s`` after its audio *started* is still masked before it is sent. That is why the
+  sessions' ``max_decision_latency_s`` is measured from the start of a word / segment.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import soxr
+import torch
+
+from .obfuscate import obfuscate
+
+
+def clean_words(words: list[dict], duration_s: float | None = None) -> list[dict]:
+    out = []
+    for w in words:
+        start, end = max(0.0, float(w["start_s"])), float(w["end_s"])
+        if duration_s is not None:
+            end = min(duration_s, end)
+        out.append({"word": str(w["word"]), "start_s": start, "end_s": end})
+    return out
+
+
+def clean_segments(segments: list[dict]) -> list[dict]:
+    out = []
+    for s in segments:
+        start, end = float(s["start_s"]), float(s["end_s"])
+        if end <= start:
+            continue
+        out.append({
+            "start_s": start,
+            "end_s": end,
+            "label": str(s.get("label", "PII")),
+            "confidence": float(s.get("confidence", 1.0)),
+            "text": str(s.get("text", "")),
+        })
+    return sorted(out, key=lambda s: s["start_s"])
+
+
+class LivePII:
+    """One live session: streaming ASR -> streaming PII on the input, held-back masking of the output.
+
+    ``push_output`` returns exactly as many samples as it receives, delayed by the holdback
+    (the first ``holdback`` samples are silence); ``flush`` returns the held-back remainder.
+    """
+
+    def __init__(
+        self,
+        asr: Any,
+        pii: Any,
+        input_sample_rate: int,
+        output_sample_rate: int,
+        model_delay_s: float,
+        mask: str,
+        padding_ms: float,
+        holdback_ms: float | None = None,
+    ):
+        self.asr_session = asr.open_stream()
+        self.pii_session = pii.open_stream()
+        self.asr_sr = int(getattr(asr, "sr", 16000))
+        self.resampler = (
+            soxr.ResampleStream(input_sample_rate, self.asr_sr, 1, dtype="float32", quality="HQ")
+            if input_sample_rate != self.asr_sr
+            else None
+        )
+        self.out_sr = output_sample_rate
+        self.model_delay_s = model_delay_s
+        self.mask, self.padding_ms = mask, padding_ms
+        self.detector_latency_s = float(self.asr_session.max_decision_latency_s) + float(
+            self.pii_session.max_decision_latency_s
+        )
+        auto = self.detector_latency_s + padding_ms / 1000
+        self.holdback_s = auto if holdback_ms is None else max(0.0, holdback_ms / 1000)
+        hold = int(round(self.holdback_s * output_sample_rate))
+        self.buffer = np.zeros(hold, dtype=np.float32)  # pre-filled silence = the holdback
+        self.emitted = -hold  # absolute raw-output index of buffer[0]
+        self.segments: list[dict] = []  # output time, for obfuscate()
+        self.leaked_s = 0.0
+        self.leaked_segments = 0
+
+    def _detect(self, words: list[dict], final: bool = False) -> list[dict]:
+        events = []
+        words = clean_words(words)
+        if words:
+            events.append({"type": "pii_words", "words": words})
+        segments = list(self.pii_session.push(words)) if words else []
+        if final:
+            segments += list(self.pii_session.flush())
+        segments = clean_segments(segments)
+        if segments:
+            sent_until = self.emitted / self.out_sr  # output time already sent to the listener
+            for s in segments:
+                start, end = s["start_s"] + self.model_delay_s, s["end_s"] + self.model_delay_s
+                self.segments.append({"start_s": start, "end_s": end})
+                leak = min(end, sent_until) - start
+                if leak > 0:
+                    self.leaked_s += leak
+                    self.leaked_segments += 1
+            events.append({"type": "pii_segments", "segments": segments})
+        return events
+
+    def push_input(self, chunk: np.ndarray) -> list[dict]:
+        """Feed one VC input chunk (input sample rate) to the detectors; return UI events."""
+        chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        if self.resampler is not None:
+            chunk = self.resampler.resample_chunk(chunk)
+        if not chunk.size:
+            return []
+        return self._detect(self.asr_session.push(torch.from_numpy(np.ascontiguousarray(chunk))[None]))
+
+    def push_output(self, chunk: np.ndarray) -> np.ndarray:
+        """Feed one raw VC output chunk; return the same number of masked, held-back samples."""
+        chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        self.buffer = np.concatenate([self.buffer, chunk])
+        n = len(chunk)
+        return self._emit(n)
+
+    def _emit(self, n: int) -> np.ndarray:
+        out, self.buffer = self.buffer[:n], self.buffer[n:]
+        masked = obfuscate(out, self.out_sr, self.segments, self.mask, self.padding_ms, start_s=self.emitted / self.out_sr)
+        self.emitted += len(out)
+        return masked
+
+    def flush(self) -> tuple[list[dict], np.ndarray]:
+        """End of stream: final words / segments, then the held-back remainder of the output."""
+        tail = self.resampler.resample_chunk(np.zeros(0, dtype=np.float32), last=True) if self.resampler else None
+        words = list(self.asr_session.push(torch.from_numpy(tail)[None])) if tail is not None and tail.size else []
+        words += list(self.asr_session.flush())
+        events = self._detect(words, final=True)
+        return events, self._emit(len(self.buffer))
+
+    def summary(self) -> dict:
+        return {
+            "type": "pii_end",
+            "leaked_ms": self.leaked_s * 1000,
+            "leaked_segments": self.leaked_segments,
+            "holdback_ms": self.holdback_s * 1000,
+        }
+
+    def close(self) -> None:
+        for session in (self.asr_session, self.pii_session):
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()

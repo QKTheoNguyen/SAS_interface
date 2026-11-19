@@ -23,6 +23,9 @@ const state = {
   metricsPoll: null,
   piiPoll: null,
   piiUrl: null, // object URL of the obfuscated output
+  piiLiveUrl: null, // object URL of the live-masked stream recording
+  piiOptions: null, // last /api/pii/options answer
+  piiLive: { words: [], segments: [] }, // live transcript of the current / last stream
   statsTimer: null,
 };
 
@@ -487,8 +490,11 @@ async function renderSettings({ keepParams = false, preset, apply } = {}) {
   if (presets.length) basic.unshift(renderPresetSelect(presets, presetName));
   $("params").replaceChildren(...basic);
   $("advanced-params").replaceChildren(...advanced);
+  const live = livePanelVisible();
+  $("live-pii-panel").hidden = !live;
   $("advanced").hidden = !advanced.length;
-  $("params-card").hidden = !params.length;
+  $("params-card").hidden = !params.length && !live;
+  if (live) refreshPiiOptions();
 
   const targetVoice = spec.target_voice || "none";
   $("target-card").hidden = targetVoice === "none";
@@ -556,6 +562,7 @@ function updateRunButton() {
   $("run").textContent = state.stream ? "■ Stop streaming" : streaming ? "● Start streaming" : "Run";
   $("run").classList.toggle("recording", !!state.stream);
   updateMetricsButton();
+  updatePiiButton();
   if (state.stream) {
     $("run").disabled = state.stream.stopping;
     return;
@@ -569,7 +576,7 @@ function updateRunButton() {
   $("run").title = blockers.join(", ");
 }
 
-function showResult({ original, output, model, meta }) {
+function showResult({ original, output, model, meta, offsetS = 0 }) {
   const url = URL.createObjectURL(output);
   $("original-audio").src = URL.createObjectURL(original);
   $("result-audio").src = url;
@@ -577,7 +584,8 @@ function showResult({ original, output, model, meta }) {
   $("download").download = `${model.name}_${state.task}_${state.mode}_${new Date().toISOString().replace(/[:.]/g, "-")}.wav`;
   $("result-meta").textContent = meta;
   $("result-card").hidden = false;
-  state.lastResult = { original, output, task: state.task };
+  // offsetS: how much later the output is than the source (stream recordings: the model delay).
+  state.lastResult = { original, output, task: state.task, mode: state.mode, offsetS };
   $("metrics-results").replaceChildren();
   $("f0-plot").hidden = true;
   $("spectrogram-plot").hidden = true;
@@ -699,55 +707,156 @@ async function computeMetrics() {
 // Post processing: PII obfuscation (anonymization, non-streaming only)
 // ---------------------------------------------------------------------------
 
+/** Show / hide section 8 and clear its results. In streaming mode it is shown before Start
+ *  (live controls); in non-streaming mode once there is a result. */
+/** Show / hide section 8 (once there is a result) and clear its results. */
 function resetPii() {
-  const show = !!state.config.metrics && state.task === "anonymization" && state.mode === "non-streaming";
+  const show = !!state.config.metrics && state.task === "anonymization" && !!state.lastResult;
   $("pii-card").hidden = !show;
   $("pii-result").hidden = true;
+  $("pii-live-result").hidden = true;
   $("pii-status").textContent = "";
-  if (state.piiUrl) URL.revokeObjectURL(state.piiUrl);
-  state.piiUrl = null;
+  for (const key of ["piiUrl", "piiLiveUrl"]) {
+    if (state[key]) URL.revokeObjectURL(state[key]);
+    state[key] = null;
+  }
   if (show) refreshPiiOptions();
+  else updatePiiButton();
 }
 
-function fillPiiSelect(select, models) {
+/** Live PII panel (Settings > Advanced): streaming anonymization with a metrics worker. */
+function livePanelVisible() {
+  return !!state.config.metrics && state.task === "anonymization" && state.mode === "streaming";
+}
+
+/** Fill a model dropdown. With `streaming`, models without open_stream() are listed but disabled. */
+function fillPiiSelect(select, models, { streaming = false } = {}) {
   const previous = select.value;
+  const usable = (m) => m.status === "ready" && (!streaming || m.streaming);
   const options = models.map((m) => {
-    const suffix = m.status === "ready" ? "" : m.status === "unavailable" ? " (unavailable)" : " (loading…)";
+    const suffix =
+      m.status === "unavailable" ? " (unavailable)" : m.status !== "ready" ? " (loading…)" : !usable(m) ? " (no streaming mode)" : "";
     const option = new Option(m.label + suffix, m.id);
-    option.disabled = m.status !== "ready";
+    option.disabled = !usable(m);
     if (m.error) option.title = m.error;
     return option;
   });
   if (!options.length) options.push(Object.assign(new Option("None available", ""), { disabled: true }));
   select.replaceChildren(...options);
-  const ready = models.filter((m) => m.status === "ready");
-  select.value = (ready.find((m) => m.id === previous) || ready.find((m) => m.default) || ready[0])?.id ?? "";
+  const ok = models.filter(usable);
+  select.value = (ok.find((m) => m.id === previous) || ok.find((m) => m.default) || ok[0])?.id ?? "";
 }
 
 async function refreshPiiOptions() {
   const status = $("pii-status");
   try {
     const options = await fetchJson("/api/pii/options");
+    state.piiOptions = options;
     fillPiiSelect($("pii-asr"), options.asr_models);
     fillPiiSelect($("pii-detector"), options.pii_models);
+    fillPiiSelect($("live-pii-asr"), options.asr_models, { streaming: true });
+    fillPiiSelect($("live-pii-detector"), options.pii_models, { streaming: true });
     status.className = "status";
     status.textContent = options.asr_models.length && options.pii_models.length ? "" : "No ASR/PII models available.";
     const pending = [...options.asr_models, ...options.pii_models].some((m) => ["pending", "loading"].includes(m.status));
     clearTimeout(state.piiPoll);
-    if (pending && !$("pii-card").hidden) state.piiPoll = setTimeout(refreshPiiOptions, 3000);
+    if (pending && !($("pii-card").hidden && $("live-pii-panel").hidden)) state.piiPoll = setTimeout(refreshPiiOptions, 3000);
   } catch (err) {
-    fillPiiSelect($("pii-asr"), []);
-    fillPiiSelect($("pii-detector"), []);
+    for (const id of ["pii-asr", "pii-detector", "live-pii-asr", "live-pii-detector"]) fillPiiSelect($(id), []);
+    state.piiOptions = null;
     status.className = "status error";
     status.textContent = err.message;
   }
   updatePiiButton();
 }
 
+/** The selected ASR and PII models both implement open_stream(). */
+function piiLiveSupported() {
+  const o = state.piiOptions;
+  const asr = o?.asr_models.find((m) => m.id === $("live-pii-asr").value);
+  const pii = o?.pii_models.find((m) => m.id === $("live-pii-detector").value);
+  return !!(asr?.streaming && pii?.streaming);
+}
+
 function updatePiiButton() {
-  const ok = state.lastResult && $("pii-asr").value && $("pii-detector").value;
+  const live = !!state.stream; // settings are locked while streaming
+  const models = $("pii-asr").value && $("pii-detector").value;
+  const ok = state.lastResult && models && !live;
   $("run-pii").disabled = !ok;
-  $("run-pii").title = ok ? "" : "Needs a result and a ready ASR model and PII detector";
+  $("run-pii").title = live ? "Stop the stream first" : ok ? "" : "Needs a result and a ready ASR model and PII detector";
+  for (const id of ["pii-asr", "pii-detector", "pii-mask", "pii-padding", "pii-padding-range"]) $(id).disabled = live;
+
+  // Live panel (Settings > Advanced)
+  const supported = piiLiveSupported();
+  if (!supported) $("live-pii-enable").value = "off";
+  const on = $("live-pii-enable").value === "on";
+  $("live-pii-enable").disabled = live || !supported;
+  for (const id of ["live-pii-asr", "live-pii-detector", "live-pii-mask", "live-pii-padding", "live-pii-padding-range", "live-pii-holdback-auto"]) {
+    $(id).disabled = live;
+  }
+  const manual = !live && !$("live-pii-holdback-auto").checked;
+  $("live-pii-holdback").disabled = $("live-pii-holdback-range").disabled = !manual;
+  $("live-pii-help").textContent = !state.piiOptions
+    ? "No ASR/PII models available."
+    : supported
+      ? "The output is held back long enough for the detector to decide, then masked before you hear it."
+      : "Needs an ASR model and a PII detector that both have a streaming mode.";
+  $("live-pii-state").textContent = on ? "· on" : "· off";
+}
+
+/** Live PII options for LiveStream, or null when live obfuscation is off. */
+function livePiiOptions() {
+  if (!livePanelVisible() || $("live-pii-enable").value !== "on" || !piiLiveSupported()) return null;
+  return {
+    asr_model: $("live-pii-asr").value,
+    pii_model: $("live-pii-detector").value,
+    mask: $("live-pii-mask").value,
+    padding_ms: +$("live-pii-padding").value,
+    holdback_ms: $("live-pii-holdback-auto").checked ? null : +$("live-pii-holdback").value,
+  };
+}
+
+function onLivePii(event) {
+  const live = state.piiLive;
+  if (event.type === "pii_words") live.words.push(...event.words);
+  else if (event.type === "pii_segments") live.segments.push(...event.segments);
+  else if (event.type === "pii_error") {
+    $("pii-live-warning").hidden = false;
+    $("pii-live-warning").textContent = `⚠ ${event.detail}`;
+  }
+  $("pii-card").hidden = false;
+  $("pii-live-result").hidden = false;
+  renumberSteps();
+  renderTranscript($("pii-live-transcript"), live.words, live.segments);
+}
+
+/** After a stream with live PII: the masked recording, leak report and final transcript. */
+function showLivePii(result, model) {
+  if (!result.masked) return;
+  const box = $("pii-live-result");
+  box.hidden = false;
+  if (state.piiLiveUrl) URL.revokeObjectURL(state.piiLiveUrl);
+  state.piiLiveUrl = URL.createObjectURL(result.masked);
+  $("pii-live-audio").src = state.piiLiveUrl;
+  $("pii-live-download").href = state.piiLiveUrl;
+  $("pii-live-download").download = ($("download").download || `${model.name}.wav`).replace(/\.wav$/, `_pii-live-${$("live-pii-mask").value}.wav`);
+  $("pii-live-player").hidden = false;
+  $("pii-live-row").hidden = false;
+  const sum = result.pii?.summary;
+  const n = state.piiLive.segments.length;
+  $("pii-live-meta").textContent = sum
+    ? `${n} PII segment${n === 1 ? "" : "s"} · holdback ${Math.round(sum.holdback_ms)} ms · ` +
+      (sum.leaked_segments ? `Leaked: ${Math.round(sum.leaked_ms)} ms in ${sum.leaked_segments} segment${sum.leaked_segments === 1 ? "" : "s"}` : "no leak")
+    : "";
+  const warning = $("pii-live-warning");
+  if (result.pii?.error) {
+    warning.hidden = false;
+    warning.textContent = `⚠ ${result.pii.error}`;
+  } else if (sum?.leaked_segments) {
+    warning.hidden = false;
+    warning.textContent = "Some PII was detected after it had already been played: increase the holdback.";
+  }
+  renderTranscript($("pii-live-transcript"), state.piiLive.words, state.piiLive.segments);
 }
 
 /** Transcript with the words inside a PII segment wrapped in <mark>, one mark per segment. */
@@ -789,6 +898,7 @@ async function runPii() {
   form.append("pii_model", $("pii-detector").value);
   form.append("mask", $("pii-mask").value);
   form.append("padding_ms", $("pii-padding").value);
+  form.append("offset_s", state.lastResult.offsetS || 0);
   status.className = "status";
   status.textContent = "Detecting…";
   $("run-pii").disabled = true;
@@ -1112,6 +1222,7 @@ function renderLatency(stats) {
   const items = [
     ["End-to-end (estimate)", ms(stats.totalMs), "total"],
     ["Model delay", ms(stats.algorithmicMs)],
+    ...(stats.piiHoldbackMs ? [["PII holdback", ms(stats.piiHoldbackMs)]] : []),
     ["Chunk capture", ms(stats.chunkMs)],
     ["Round trip", ms(stats.roundTripMs)],
     ["Compute / chunk", `${stats.computeMs.toFixed(1)} ms`],
@@ -1138,6 +1249,12 @@ async function startStream() {
   const status = $("run-status");
   status.className = "status";
   status.textContent = "Connecting…";
+  state.piiLive = { words: [], segments: [] };
+  $("pii-live-result").hidden = true;
+  $("pii-live-player").hidden = true;
+  $("pii-live-row").hidden = true;
+  $("pii-live-warning").hidden = true;
+  $("pii-live-transcript").replaceChildren();
   const stream = new LiveStream({
     model: m.name,
     task: state.task,
@@ -1146,6 +1263,8 @@ async function startStream() {
     file: state.streamSource === "file" ? state.streamFile : null,
     monitor: $("stream-monitor").checked,
     maxSeconds: state.config.max_stream_seconds,
+    pii: livePiiOptions(),
+    onPii: onLivePii,
     onEnd: (result) => endStream(m, result),
   });
   state.stream = stream;
@@ -1153,6 +1272,11 @@ async function startStream() {
   try {
     await stream.start();
     status.textContent = stream.opts.file ? `Streaming ${stream.opts.file.name}…` : "Streaming from the microphone…";
+    // Auto holdback: show the value the PII service picked (detector latency + padding).
+    if (stream.stats.piiHoldbackMs && $("live-pii-holdback-auto").checked) {
+      const v = Math.min(3000, Math.round(stream.stats.piiHoldbackMs / 50) * 50);
+      $("live-pii-holdback").value = $("live-pii-holdback-range").value = v;
+    }
     state.statsTimer = setInterval(() => renderLatency(stream.stats), 250);
   } catch (err) {
     stream.finish(err);
@@ -1180,7 +1304,9 @@ function endStream(model, result) {
       output: result.output,
       model,
       meta: `${model.label} · streamed ${formatSeconds(s.sentSeconds)} · end-to-end ≈ ${Math.round(s.totalMs)} ms · RTF ${s.rtf.toFixed(2)}`,
+      offsetS: s.algorithmicMs / 1000,
     });
+    showLivePii(result, model);
   }
   updateRunButton();
 }
@@ -1230,6 +1356,8 @@ async function onSelectionChange() {
   state.targets = [];
   renderTargets();
   await renderSettings();
+  resetPii();
+  renumberSteps();
   updateRunButton();
 }
 
@@ -1273,6 +1401,13 @@ async function init() {
   $("pii-padding-range").addEventListener("input", () => ($("pii-padding").value = $("pii-padding-range").value));
   $("pii-padding").addEventListener("input", () => ($("pii-padding-range").value = $("pii-padding").value));
   $("run-pii").addEventListener("click", runPii);
+  for (const id of ["live-pii-enable", "live-pii-asr", "live-pii-detector", "live-pii-holdback-auto"]) {
+    $(id).addEventListener("change", updatePiiButton);
+  }
+  $("live-pii-padding-range").addEventListener("input", () => ($("live-pii-padding").value = $("live-pii-padding-range").value));
+  $("live-pii-holdback-range").addEventListener("input", () => ($("live-pii-holdback").value = $("live-pii-holdback-range").value));
+  $("live-pii-holdback").addEventListener("input", () => ($("live-pii-holdback-range").value = $("live-pii-holdback").value));
+  $("live-pii-padding").addEventListener("input", () => ($("live-pii-padding-range").value = $("live-pii-padding").value));
   $("stream-file-button").addEventListener("click", () => $("stream-file").click());
   $("stream-file").addEventListener("change", () => {
     state.streamFile = $("stream-file").files[0] || null;

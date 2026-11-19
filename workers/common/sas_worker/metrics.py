@@ -26,6 +26,7 @@ import base64
 import importlib
 import inspect
 import io
+import json
 import logging
 import pkgutil
 import tempfile
@@ -42,10 +43,11 @@ import soundfile as sf
 import torch
 import torch.nn.functional as F
 import torchaudio.functional as AF
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 
 from .audio import read_wav, write_wav
 from .obfuscate import MASKS, MAX_PADDING_MS, obfuscate
+from .pii import LivePII, clean_segments, clean_words
 
 log = logging.getLogger("sas_worker.metrics")
 
@@ -127,6 +129,7 @@ class MetricModel:
     status: str = "pending"  # pending -> loading -> ready | unavailable
     error: str | None = None
     obj: Any = field(default=None, repr=False)
+    streaming: bool = False  # asr / pii: implements open_stream() (live PII obfuscation)
 
     def describe(self) -> dict:
         return {
@@ -135,6 +138,7 @@ class MetricModel:
             "status": self.status,
             "error": self.error,
             "default": DEFAULTS.get(self.kind) == self.id,
+            "streaming": self.streaming,
         }
 
 
@@ -194,31 +198,22 @@ def discover_package(package: Any, kind: str, accept: Any) -> list[MetricModel]:
             found.append(MetricModel(name, kind, None, "unavailable", missing_dependency(exc)))
             continue
         if inspect.isclass(cls) and not inspect.isabstract(cls) and no_required_args(cls) and accept(cls):
-            found.append(MetricModel(name, kind, cls))
+            found.append(MetricModel(name, kind, cls, streaming=overrides(cls, "open_stream")))
     return found
 
 
-def clean_words(words: list[dict], duration_s: float) -> list[dict]:
-    return [
-        {"word": str(w["word"]), "start_s": max(0.0, float(w["start_s"])), "end_s": min(duration_s, float(w["end_s"]))}
-        for w in words
-    ]
+def overrides(cls: type, method: str) -> bool:
+    """``cls`` has a usable ``method``: not missing, abstract, or a ``raise NotImplementedError`` stub."""
+    impl = getattr(cls, method, None)
+    return callable(impl) and not getattr(impl, "__isabstractmethod__", False) and not _is_stub(impl)
 
 
-def clean_segments(segments: list[dict]) -> list[dict]:
-    out = []
-    for s in segments:
-        start, end = float(s["start_s"]), float(s["end_s"])
-        if end <= start:
-            continue
-        out.append({
-            "start_s": start,
-            "end_s": end,
-            "label": str(s.get("label", "PII")),
-            "confidence": float(s.get("confidence", 1.0)),
-            "text": str(s.get("text", "")),
-        })
-    return sorted(out, key=lambda s: s["start_s"])
+def _is_stub(fn: Any) -> bool:
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return False
+    return "raise NotImplementedError" in src
 
 
 def f0_extractors() -> list[type]:
@@ -417,8 +412,12 @@ def create_metrics_app(device: torch.device) -> FastAPI:
         pii_model: str = Form(...),
         mask: str = Form("beep"),
         padding_ms: float = Form(100.0),
+        offset_s: float = Form(0.0),
     ) -> dict:
-        """ASR + PII detection on the clean source; mask the segments in the output (same timing assumed)."""
+        """ASR + PII detection on the clean source; mask the segments in the output (same timing assumed).
+
+        ``offset_s``: how much later the output is than the source (a stream recording is
+        shifted by the model's algorithmic delay); 0 for non-streaming conversions."""
         asr = ready(asr_model, "asr")
         pii = ready(pii_model, "pii")
         if mask not in MASKS:
@@ -438,7 +437,7 @@ def create_metrics_app(device: torch.device) -> FastAPI:
             start = time.perf_counter()
             words = clean_words(asr.obj.transcribe_words(src), src_seconds)
             segments = clean_segments(pii.obj.detect(words))
-            masked = obfuscate(out.numpy(), out_sr, segments, mask=mask, padding_ms=padding_ms)
+            masked = obfuscate(out.numpy(), out_sr, segments, mask=mask, padding_ms=padding_ms, start_s=-offset_s)
             return {
                 "words": words,
                 "segments": segments,
@@ -446,6 +445,7 @@ def create_metrics_app(device: torch.device) -> FastAPI:
                 "sample_rate": out_sr,
                 "source_seconds": src_seconds,
                 "output_seconds": out.size(-1) / out_sr,
+                "offset_s": offset_s,
                 "seconds": time.perf_counter() - start,
             }
 
@@ -522,5 +522,108 @@ def create_metrics_app(device: torch.device) -> FastAPI:
         except Exception as exc:
             log.error("metrics failed\n%s", traceback.format_exc())
             raise HTTPException(500, f"{type(exc).__name__}: {exc}") from exc
+
+    live = {"busy": False}
+
+    @app.websocket("/pii/stream")
+    async def pii_stream(ws: WebSocket) -> None:
+        """Live PII obfuscation, driven by the gateway next to a VC stream.
+
+        1. gateway text  {"type": "start", "asr_model", "pii_model", "mask", "padding_ms",
+                          "holdback_ms" (null = auto), "input_sample_rate", "output_sample_rate", "model_delay_ms"}
+        2. worker text   {"type": "ready", "holdback_ms", "detector_latency_ms"}
+        3. gateway binary uint32 kind + float32 PCM; kind 0 = VC input chunk, 1 = raw VC output chunk.
+           For each output chunk the worker sends back one binary frame: the same number of
+           masked samples, held back by holdback_ms. Input chunks produce text events
+           {"type": "pii_words", "words"} / {"type": "pii_segments", "segments"} (source time).
+        4. gateway text {"type": "stop"} -> final events, one binary frame with the held-back
+           remainder, then {"type": "pii_end", "leaked_ms", "leaked_segments", "holdback_ms"}.
+        Errors: worker text {"type": "error", "detail"}, close.
+        """
+        await ws.accept()
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pii-stream")
+        session: LivePII | None = None
+        owner = False
+
+        async def call(fn, *args):
+            return await asyncio.get_running_loop().run_in_executor(pool, fn, *args)
+
+        try:
+            start = await ws.receive_json()
+            try:
+                asr, pii = ready(start.get("asr_model", ""), "asr"), ready(start.get("pii_model", ""), "pii")
+            except HTTPException as exc:
+                await ws.send_json({"type": "error", "detail": exc.detail})
+                return
+            for m in (asr, pii):
+                if not m.streaming:
+                    await ws.send_json({"type": "error", "detail": f"{m.id} has no streaming mode (open_stream)"})
+                    return
+            mask, padding_ms = start.get("mask", "beep"), float(start.get("padding_ms", 100))
+            if mask not in MASKS or not 0 <= padding_ms <= MAX_PADDING_MS:
+                await ws.send_json({"type": "error", "detail": "Bad mask or padding_ms"})
+                return
+            if live["busy"]:
+                await ws.send_json({"type": "error", "detail": "Live PII obfuscation is busy with another stream."})
+                return
+            live["busy"] = owner = True
+            holdback = start.get("holdback_ms")
+            session = await call(
+                LivePII,
+                asr.obj,
+                pii.obj,
+                int(start["input_sample_rate"]),
+                int(start["output_sample_rate"]),
+                float(start.get("model_delay_ms", 0)) / 1000,
+                mask,
+                padding_ms,
+                None if holdback is None else float(holdback),
+            )
+            await ws.send_json({
+                "type": "ready",
+                "holdback_ms": session.holdback_s * 1000,
+                "detector_latency_ms": session.detector_latency_s * 1000,
+            })
+            while True:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                data = message.get("bytes")
+                if data is not None:
+                    kind = int.from_bytes(data[:4], "little")
+                    pcm = np.frombuffer(data, dtype="<f4", offset=4)
+                    if kind == 0:
+                        for event in await call(session.push_input, pcm):
+                            await ws.send_json(event)
+                    else:
+                        await ws.send_bytes((await call(session.push_output, pcm)).astype("<f4").tobytes())
+                elif json.loads(message.get("text") or "{}").get("type") == "stop":
+                    events, tail = await call(session.flush)
+                    for event in events:
+                        await ws.send_json(event)
+                    await ws.send_bytes(tail.astype("<f4").tobytes())
+                    await ws.send_json(session.summary())
+                    break
+        except WebSocketDisconnect:
+            pass
+        except Exception as exc:
+            log.error("live PII failed\n%s", traceback.format_exc())
+            try:
+                await ws.send_json({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+            except Exception:
+                pass
+        finally:
+            if session is not None:
+                try:
+                    await call(session.close)
+                except Exception:
+                    log.debug(traceback.format_exc())
+            pool.shutdown(wait=False)
+            if owner:
+                live["busy"] = False
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     return app
