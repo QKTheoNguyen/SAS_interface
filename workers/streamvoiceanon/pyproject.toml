@@ -1,13 +1,13 @@
 [project]
 name = "sas-worker-streamvoiceanon"
 version = "0.1.0"
-description = "Worker environment for StreamVoiceAnon (pins torch 2.4)"
+description = "Worker environment for StreamVoiceAnon (torch 2.8; 2.4 has no RTX 50xx kernels)"
 requires-python = ">=3.10,<3.12"
 # Inference subset of third_party/StreamVoiceAnon/requirements.txt (GUI and training deps left out).
 dependencies = [
     "sas-worker",
-    "torch==2.4.0",
-    "torchaudio==2.4.0",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
     "numpy==1.26.4",
     "scipy==1.13.1",
     "librosa==0.10.2",
