@@ -130,6 +130,52 @@
             <figure id="spectrogram-plot" hidden></figure>
           </details>
         </section>
+
+        <section class="card" id="pii-card" hidden>
+          <h2><span class="step"></span> Post processing</h2>
+          <p class="help muted">
+            PII obfuscation: ASR and PII detection run on the original speech, then the detected
+            segments are masked in the output (same timing assumed).
+          </p>
+          <div class="param">
+            <label for="pii-asr">ASR model</label>
+            <select id="pii-asr"></select>
+          </div>
+          <div class="param">
+            <label for="pii-detector">PII detector</label>
+            <select id="pii-detector"></select>
+          </div>
+          <div class="param">
+            <label for="pii-mask">Mask</label>
+            <select id="pii-mask">
+              <option value="beep">Beep (1 kHz)</option>
+              <option value="silence">Silence</option>
+              <option value="noise">Noise</option>
+            </select>
+          </div>
+          <div class="param">
+            <label for="pii-padding">Padding (ms, each side)</label>
+            <div class="range">
+              <input type="range" id="pii-padding-range" min="0" max="300" step="10" value="100" />
+              <input type="number" id="pii-padding" min="0" max="300" step="10" value="100" />
+            </div>
+            <div class="help">Extra time masked before and after each detected segment.</div>
+          </div>
+          <button type="button" class="secondary" id="run-pii">Detect &amp; obfuscate</button>
+          <p class="status" id="pii-status" role="status"></p>
+          <div id="pii-result" hidden>
+            <figure class="pii-player">
+              <figcaption>Obfuscated output</figcaption>
+              <audio id="pii-audio" controls></audio>
+            </figure>
+            <p class="row">
+              <a id="pii-download" class="button secondary" download>Download WAV</a>
+              <span id="pii-meta" class="muted"></span>
+            </p>
+            <p class="warning" id="pii-warning" hidden></p>
+            <p class="transcript" id="pii-transcript"></p>
+          </div>
+        </section>
       </div>
     </main>
     <script type="module" src="app.js"></script>

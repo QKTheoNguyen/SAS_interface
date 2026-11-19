@@ -196,6 +196,35 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
             raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
         return await forward(r)
 
+    @app.get("/api/pii/options")
+    async def pii_options() -> Response:
+        try:
+            r = await client.get(f"{metrics_url()}/pii/options", timeout=5.0)
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
+        return await forward(r)
+
+    @app.post("/api/pii/obfuscate")
+    async def pii_obfuscate(
+        source: UploadFile = File(...),
+        output: UploadFile = File(...),
+        asr_model: str = Form(...),
+        pii_model: str = Form(...),
+        mask: str = Form("beep"),
+        padding_ms: float = Form(100.0),
+    ) -> Response:
+        url = metrics_url()
+        files = [
+            ("source", ("source.wav", await source.read(), "audio/wav")),
+            ("output", ("output.wav", await output.read(), "audio/wav")),
+        ]
+        data = {"asr_model": asr_model, "pii_model": pii_model, "mask": mask, "padding_ms": str(padding_ms)}
+        try:
+            r = await client.post(f"{url}/pii/obfuscate", data=data, files=files, timeout=CONVERT_TIMEOUT)
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Metrics worker unreachable: {exc}") from exc
+        return await forward(r)
+
     @app.post("/api/metrics/compute")
     async def metrics_compute(
         source: UploadFile = File(...),

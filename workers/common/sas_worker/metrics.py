@@ -6,13 +6,17 @@
 - F0 contours of both signals, for the panel's overlay plot.
 - Naturalness MOS of both signals (UTMOS, not in quick-convert: loaded via torch.hub).
 - Spectrograms of both signals, for the panel's heatmaps.
+- PII obfuscation (section 8 "Post processing"): ASR + PII detection on the source,
+  then the detected segments are masked in the output (see obfuscate.py).
 
 The encoders, SER models and F0 trackers are discovered from quick-convert, so a new
 ``SpeakerEncoder`` exported by ``quick_convert.components.encoders.speaker``,
 a new ``SERSystem`` listed in ``quick_convert.systems.ser.__all__``, or a new feature
 extractor producing ``ProsodyMeasurements`` columns shows up in
 the UI without changes here (once its quick-convert extra is installed in
-workers/metrics/pyproject.toml).
+workers/metrics/pyproject.toml). The same goes for classes listed in
+``quick_convert.systems.asr.__all__`` (an ``ASRSystem`` implementing ``transcribe_words``)
+and ``quick_convert.systems.pii.__all__`` (a ``PIIDetector``); contract in local/PII_requirement.md.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import asyncio
 import base64
 import importlib
 import inspect
+import io
 import logging
 import pkgutil
 import tempfile
@@ -39,7 +44,8 @@ import torch.nn.functional as F
 import torchaudio.functional as AF
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from .audio import read_wav
+from .audio import read_wav, write_wav
+from .obfuscate import MASKS, MAX_PADDING_MS, obfuscate
 
 log = logging.getLogger("sas_worker.metrics")
 
@@ -116,7 +122,7 @@ class UTMOS22Strong:
 @dataclass
 class MetricModel:
     id: str
-    kind: str  # "speaker" | "ser" | "f0" | "mos"
+    kind: str  # "speaker" | "ser" | "f0" | "mos" | "asr" | "pii"
     cls: type | None
     status: str = "pending"  # pending -> loading -> ready | unavailable
     error: str | None = None
@@ -128,7 +134,7 @@ class MetricModel:
             "label": LABELS.get(self.id, self.id),
             "status": self.status,
             "error": self.error,
-            "default": DEFAULTS[self.kind] == self.id,
+            "default": DEFAULTS.get(self.kind) == self.id,
         }
 
 
@@ -150,7 +156,69 @@ def discover() -> list[MetricModel]:
                 found.append(MetricModel(name, kind, cls))
     found += [MetricModel(cls.__name__, "f0", cls) for cls in f0_extractors()]
     found.append(MetricModel(UTMOS22Strong.__name__, "mos", UTMOS22Strong))
+    return found + discover_pii()
+
+
+def discover_pii() -> list[MetricModel]:
+    """ASR models with word timestamps (``quick_convert.systems.asr``) and PII detectors
+    (``quick_convert.systems.pii``). A package that does not exist yet just lists nothing."""
+    found = []
+    try:
+        from quick_convert.systems import asr
+        from quick_convert.systems.asr import ASRSystem
+
+        base_words = getattr(ASRSystem, "transcribe_words", None)
+        found += discover_package(
+            asr, "asr", lambda cls: issubclass(cls, ASRSystem) and callable(getattr(cls, "transcribe_words", None))
+            and cls.transcribe_words is not base_words
+        )
+    except Exception as exc:
+        log.warning("ASR discovery skipped: %s", missing_dependency(exc))
+    try:
+        from quick_convert.systems import pii
+        from quick_convert.systems.pii import PIIDetector
+
+        found += discover_package(pii, "pii", lambda cls: issubclass(cls, PIIDetector))
+    except Exception as exc:
+        log.info("PII discovery skipped: %s", missing_dependency(exc))
     return found
+
+
+def discover_package(package: Any, kind: str, accept: Any) -> list[MetricModel]:
+    """Concrete classes in ``package.__all__`` that ``accept`` and need no constructor arguments."""
+    found = []
+    for name in getattr(package, "__all__", []):
+        try:
+            cls = getattr(package, name)
+        except Exception as exc:  # lazily imported class whose dependency is missing
+            found.append(MetricModel(name, kind, None, "unavailable", missing_dependency(exc)))
+            continue
+        if inspect.isclass(cls) and not inspect.isabstract(cls) and no_required_args(cls) and accept(cls):
+            found.append(MetricModel(name, kind, cls))
+    return found
+
+
+def clean_words(words: list[dict], duration_s: float) -> list[dict]:
+    return [
+        {"word": str(w["word"]), "start_s": max(0.0, float(w["start_s"])), "end_s": min(duration_s, float(w["end_s"]))}
+        for w in words
+    ]
+
+
+def clean_segments(segments: list[dict]) -> list[dict]:
+    out = []
+    for s in segments:
+        start, end = float(s["start_s"]), float(s["end_s"])
+        if end <= start:
+            continue
+        out.append({
+            "start_s": start,
+            "end_s": end,
+            "label": str(s.get("label", "PII")),
+            "confidence": float(s.get("confidence", 1.0)),
+            "text": str(s.get("text", "")),
+        })
+    return sorted(out, key=lambda s: s["start_s"])
 
 
 def f0_extractors() -> list[type]:
@@ -278,6 +346,10 @@ def load(model: MetricModel, device: torch.device) -> None:
             f0_contour(model.obj, noise)
         elif model.kind == "mos":
             model.obj.predict(noise)
+        elif model.kind == "asr":
+            model.obj.transcribe_words(torch.randn(1, getattr(model.obj, "sr", SAMPLE_RATE)) * 0.01)
+        elif model.kind == "pii":
+            model.obj.detect([])
         else:
             emotion_vector(model.obj, noise)
         model.status = "ready"
@@ -303,7 +375,7 @@ def create_metrics_app(device: torch.device) -> FastAPI:
 
     def load_all() -> None:
         # Defaults first, so the panel is usable as soon as possible.
-        for model in sorted(models.values(), key=lambda m: DEFAULTS[m.kind] != m.id):
+        for model in sorted(models.values(), key=lambda m: DEFAULTS.get(m.kind) != m.id):
             if model.cls is not None:
                 load(model, device)
 
@@ -327,6 +399,61 @@ def create_metrics_app(device: torch.device) -> FastAPI:
             "f0_trackers": [m.describe() for m in models.values() if m.kind == "f0"],
             "mos_models": [m.describe() for m in models.values() if m.kind == "mos"],
         }
+
+    @app.get("/pii/options")
+    def pii_options() -> dict:
+        return {
+            "asr_models": [m.describe() for m in models.values() if m.kind == "asr"],
+            "pii_models": [m.describe() for m in models.values() if m.kind == "pii"],
+            "masks": list(MASKS),
+            "max_padding_ms": MAX_PADDING_MS,
+        }
+
+    @app.post("/pii/obfuscate")
+    async def pii_obfuscate(
+        source: UploadFile = File(...),
+        output: UploadFile = File(...),
+        asr_model: str = Form(...),
+        pii_model: str = Form(...),
+        mask: str = Form("beep"),
+        padding_ms: float = Form(100.0),
+    ) -> dict:
+        """ASR + PII detection on the clean source; mask the segments in the output (same timing assumed)."""
+        asr = ready(asr_model, "asr")
+        pii = ready(pii_model, "pii")
+        if mask not in MASKS:
+            raise HTTPException(400, f"Unknown mask {mask!r}; expected one of {list(MASKS)}")
+        if not 0 <= padding_ms <= MAX_PADDING_MS:
+            raise HTTPException(400, f"padding_ms must be in [0, {MAX_PADDING_MS:g}]")
+        try:
+            src = read_wav(await source.read(), getattr(asr.obj, "sr", SAMPLE_RATE))
+            out_bytes = await output.read()
+            out_sr = sf.info(io.BytesIO(out_bytes)).samplerate
+            out = read_wav(out_bytes, out_sr)
+        except Exception as exc:
+            raise HTTPException(400, f"Bad input: {exc}") from exc
+        src_seconds = src.size(-1) / getattr(asr.obj, "sr", SAMPLE_RATE)
+
+        def work() -> dict:
+            start = time.perf_counter()
+            words = clean_words(asr.obj.transcribe_words(src), src_seconds)
+            segments = clean_segments(pii.obj.detect(words))
+            masked = obfuscate(out.numpy(), out_sr, segments, mask=mask, padding_ms=padding_ms)
+            return {
+                "words": words,
+                "segments": segments,
+                "audio_b64": base64.b64encode(write_wav(torch.from_numpy(masked), out_sr)).decode("ascii"),
+                "sample_rate": out_sr,
+                "source_seconds": src_seconds,
+                "output_seconds": out.size(-1) / out_sr,
+                "seconds": time.perf_counter() - start,
+            }
+
+        try:
+            return await run(work)
+        except Exception as exc:
+            log.error("PII obfuscation failed\n%s", traceback.format_exc())
+            raise HTTPException(500, f"{type(exc).__name__}: {exc}") from exc
 
     def ready(model_id: str, kind: str) -> MetricModel:
         model = models.get(model_id)

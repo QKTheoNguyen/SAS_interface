@@ -21,6 +21,8 @@ const state = {
   stream: null, // active LiveStream
   lastResult: null, // {original, output, task} of the result shown, for metrics
   metricsPoll: null,
+  piiPoll: null,
+  piiUrl: null, // object URL of the obfuscated output
   statsTimer: null,
 };
 
@@ -582,6 +584,7 @@ function showResult({ original, output, model, meta }) {
   $("metrics-status").textContent = "";
   $("metrics-panel").hidden = !(state.config.metrics && state.task === "anonymization");
   updateMetricsButton();
+  resetPii();
   renumberSteps();
   $("result-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -689,6 +692,131 @@ async function computeMetrics() {
     status.textContent = err.message;
   } finally {
     updateMetricsButton();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Post processing: PII obfuscation (anonymization, non-streaming only)
+// ---------------------------------------------------------------------------
+
+function resetPii() {
+  const show = !!state.config.metrics && state.task === "anonymization" && state.mode === "non-streaming";
+  $("pii-card").hidden = !show;
+  $("pii-result").hidden = true;
+  $("pii-status").textContent = "";
+  if (state.piiUrl) URL.revokeObjectURL(state.piiUrl);
+  state.piiUrl = null;
+  if (show) refreshPiiOptions();
+}
+
+function fillPiiSelect(select, models) {
+  const previous = select.value;
+  const options = models.map((m) => {
+    const suffix = m.status === "ready" ? "" : m.status === "unavailable" ? " (unavailable)" : " (loading…)";
+    const option = new Option(m.label + suffix, m.id);
+    option.disabled = m.status !== "ready";
+    if (m.error) option.title = m.error;
+    return option;
+  });
+  if (!options.length) options.push(Object.assign(new Option("None available", ""), { disabled: true }));
+  select.replaceChildren(...options);
+  const ready = models.filter((m) => m.status === "ready");
+  select.value = (ready.find((m) => m.id === previous) || ready.find((m) => m.default) || ready[0])?.id ?? "";
+}
+
+async function refreshPiiOptions() {
+  const status = $("pii-status");
+  try {
+    const options = await fetchJson("/api/pii/options");
+    fillPiiSelect($("pii-asr"), options.asr_models);
+    fillPiiSelect($("pii-detector"), options.pii_models);
+    status.className = "status";
+    status.textContent = options.asr_models.length && options.pii_models.length ? "" : "No ASR/PII models available.";
+    const pending = [...options.asr_models, ...options.pii_models].some((m) => ["pending", "loading"].includes(m.status));
+    clearTimeout(state.piiPoll);
+    if (pending && !$("pii-card").hidden) state.piiPoll = setTimeout(refreshPiiOptions, 3000);
+  } catch (err) {
+    fillPiiSelect($("pii-asr"), []);
+    fillPiiSelect($("pii-detector"), []);
+    status.className = "status error";
+    status.textContent = err.message;
+  }
+  updatePiiButton();
+}
+
+function updatePiiButton() {
+  const ok = state.lastResult && $("pii-asr").value && $("pii-detector").value;
+  $("run-pii").disabled = !ok;
+  $("run-pii").title = ok ? "" : "Needs a result and a ready ASR model and PII detector";
+}
+
+/** Transcript with the words inside a PII segment wrapped in <mark>, one mark per segment. */
+function renderTranscript(box, words, segments) {
+  const segmentOf = (w) => {
+    const mid = (w.start_s + w.end_s) / 2;
+    return segments.findIndex((s) => mid >= s.start_s && mid <= s.end_s);
+  };
+  const nodes = [];
+  let mark = null;
+  let markSeg = -1;
+  for (const w of words) {
+    const seg = segmentOf(w);
+    if (seg >= 0 && seg === markSeg) {
+      mark.insertBefore(document.createTextNode(` ${w.word}`), mark.lastChild);
+      continue;
+    }
+    if (nodes.length) nodes.push(document.createTextNode(" "));
+    if (seg >= 0) {
+      const s = segments[seg];
+      mark = document.createElement("mark");
+      mark.title = `${s.label} · ${formatSeconds(s.start_s)}–${formatSeconds(s.end_s)} · confidence ${s.confidence.toFixed(2)}`;
+      mark.append(w.word, Object.assign(document.createElement("span"), { className: "pii-label", textContent: s.label }));
+      nodes.push(mark);
+    } else {
+      nodes.push(document.createTextNode(w.word));
+    }
+    markSeg = seg;
+  }
+  box.replaceChildren(...nodes);
+}
+
+async function runPii() {
+  const status = $("pii-status");
+  const form = new FormData();
+  form.append("source", state.lastResult.original, "source.wav");
+  form.append("output", state.lastResult.output, "output.wav");
+  form.append("asr_model", $("pii-asr").value);
+  form.append("pii_model", $("pii-detector").value);
+  form.append("mask", $("pii-mask").value);
+  form.append("padding_ms", $("pii-padding").value);
+  status.className = "status";
+  status.textContent = "Detecting…";
+  $("run-pii").disabled = true;
+  try {
+    const res = await fetch("/api/pii/obfuscate", { method: "POST", body: form });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `${res.status} ${res.statusText}`);
+    const r = await res.json();
+    const bytes = Uint8Array.from(atob(r.audio_b64), (c) => c.charCodeAt(0));
+    if (state.piiUrl) URL.revokeObjectURL(state.piiUrl);
+    state.piiUrl = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+    $("pii-audio").src = state.piiUrl;
+    $("pii-download").href = state.piiUrl;
+    $("pii-download").download = ($("download").download || "output.wav").replace(/\.wav$/, `_pii-${$("pii-mask").value}.wav`);
+    const n = r.segments.length;
+    $("pii-meta").textContent = `${n} PII segment${n === 1 ? "" : "s"} masked`;
+    const drift = r.output_seconds - r.source_seconds;
+    $("pii-warning").hidden = Math.abs(drift) < 0.05;
+    $("pii-warning").textContent =
+      `Output is ${formatSeconds(Math.abs(drift))} ${drift > 0 ? "longer" : "shorter"} than the source: ` +
+      "masks may be slightly off, increase the padding if PII is still audible.";
+    renderTranscript($("pii-transcript"), r.words, r.segments);
+    $("pii-result").hidden = false;
+    status.textContent = `Done in ${formatSeconds(r.seconds)}.`;
+  } catch (err) {
+    status.className = "status error";
+    status.textContent = err.message;
+  } finally {
+    updatePiiButton();
   }
 }
 
@@ -1141,6 +1269,10 @@ async function init() {
   }
   $("metric-spectrogram").addEventListener("change", updateMetricsButton);
   $("compute-metrics").addEventListener("click", computeMetrics);
+  for (const id of ["pii-asr", "pii-detector"]) $(id).addEventListener("change", updatePiiButton);
+  $("pii-padding-range").addEventListener("input", () => ($("pii-padding").value = $("pii-padding-range").value));
+  $("pii-padding").addEventListener("input", () => ($("pii-padding-range").value = $("pii-padding").value));
+  $("run-pii").addEventListener("click", runPii);
   $("stream-file-button").addEventListener("click", () => $("stream-file").click());
   $("stream-file").addEventListener("change", () => {
     state.streamFile = $("stream-file").files[0] || null;

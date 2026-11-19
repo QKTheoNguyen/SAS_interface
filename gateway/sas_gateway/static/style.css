@@ -199,3 +199,16 @@ figcaption { font-weight: 600; }
 .speaker-map .dot:hover, .speaker-map .dot:focus-visible { fill: var(--accent); fill-opacity: 0.8; outline: none; }
 .speaker-map .dot.selected { fill: var(--accent); fill-opacity: 1; stroke: var(--text); }
 .speaker-map .speaker-status { font-size: 0.85rem; margin-top: 6px; }
+
+/* Section 8: post processing (PII obfuscation) */
+#pii-card select { width: 100%; }
+.pii-player { margin: 12px 0 0; }
+.transcript { line-height: 1.8; margin: 12px 0 0; }
+.transcript:empty { display: none; }
+.transcript mark {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  color: inherit;
+  border-radius: 4px;
+  padding: 1px 3px;
+}
+.transcript mark .pii-label { font-size: 0.7rem; font-weight: 700; color: var(--danger); margin-left: 4px; vertical-align: super; }
