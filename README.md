@@ -62,6 +62,47 @@ unavailable with the missing package; add the extra to [`workers/metrics/pyproje
 Installing that environment builds `pyworld` (an ESPnet dependency), which needs a C++ compiler.
 The `vpc` environment also needs one, to build `fairseq`.
 
+### Speaker similarity over time
+
+With **Speaker similarity over time** ticked (the default), the panel also plots speaker similarity window by window.
+For each window it takes the cosine between the speaker embeddings of the same time span in the source and the output,
+using the speaker encoder picked above (CAMPPlus by default, on CPU). The point is drawn at the end of the window.
+The overall score, computed on the full recordings, is drawn as a dashed reference line. It is never computed by
+averaging the windows.
+
+- **Implementation.** The worker reuses quick-convert's `RollingSpeakerSimilarity`
+  ([`quick_convert/components/metrics/streaming_speaker.py`](third_party/quick-convert/quick_convert/components/metrics/streaming_speaker.py)).
+  This needs the quick-convert submodule at commit `a060e92` (the merge of `shilpa/feature/real-time-cosine-metric`
+  into `hackathon`) or later; `git submodule status` shows the pinned commit. SAS only adds the glue code:
+  `rolling_speaker_similarity` in [`sas_worker/metrics.py`](workers/common/sas_worker/metrics.py).
+- **Window and hop.** The presets are Fast 2 s / 1 s, Balanced 4 s / 2 s (default) and Stable 6 s / 2 s. Custom
+  values must be above 0, the hop must not be longer than the window, and both must be whole samples at 16 kHz.
+  CAMPPlus is limited to 10 s windows because it randomly crops longer input. These settings last for the page
+  session only.
+- **Alignment.** Windows compare the same span of speech, not chunks matched by arrival time. For a recorded stream,
+  the model's `algorithmic_latency_ms` is passed as `offset_s` and compensated. A stream's last windows, whose
+  delayed output was never recorded, come back *unavailable*. If the output length matches neither the source length
+  nor the source plus the delay (tolerance: max(100 ms, 2 %)), the model may not keep the source timing. In that case
+  no window is scored and the panel says the alignment is unverified.
+- **Missing windows.** Unavailable or failed windows (for example digital silence, or an encoder error) break the
+  line. They appear as hollow markers in an "n/a" band below the plot and are never drawn as 0. A recording shorter
+  than the window gets a message instead of a plot. The window is never shortened automatically.
+- **Reading the scores.** Lower means the voice changed more. This is an embedding similarity, not an EER, a
+  linkability measure, speaker-identification accuracy or a privacy percentage. Short windows, silence, speaker
+  changes and misalignment make individual windows less reliable.
+- **Cost.** Each window takes two CAMPPlus embeddings on the metrics worker's CPU, run on the same single model
+  thread as the other metrics. The plot header shows the mean compute time per window.
+- **Disabling.** Untick the box. The request then sends `rolling=false` and the response has no
+  `speaker_similarity_over_time` key.
+- **Scope.** The graph is computed after conversion (non-streaming results, and streams once stopped). It is not
+  updated live while a stream runs.
+
+Tests use a mock encoder and synthetic audio, so they need no GPU and no model download:
+
+```bash
+cd workers/metrics && uv run --with pytest pytest tests -q
+```
+
 ## Checking an install
 
 While `./run.sh` is up, run `uv run --project gateway python scripts/smoke_test.py`. It converts a bundled clip with

@@ -163,6 +163,29 @@ button.recording { border-color: var(--danger); color: var(--danger); }
 #f0-plot .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.85rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
 #f0-plot .shift { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-variant-numeric: tabular-nums; }
 #f0-plot .swatch { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 6px; }
+#rolling-controls .rolling-settings { margin-top: 4px; }
+#rolling-controls .rolling-settings select { width: auto; flex: 1; }
+#rolling-controls input[type="number"] { width: 80px; }
+#rolling-plot { margin: 12px 0 0; }
+#rolling-plot figcaption { font-size: 0.85rem; color: var(--muted); margin-bottom: 2px; }
+#rolling-plot .rolling-meta { font-size: 0.8rem; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+#rolling-plot .notice { font-size: 0.85rem; margin: 4px 0; }
+#rolling-plot svg { display: block; width: 100%; height: auto; touch-action: none; }
+#rolling-plot .axis { stroke: var(--border); }
+#rolling-plot .grid { stroke: var(--border); stroke-dasharray: 2 3; }
+#rolling-plot .zero { stroke: var(--muted); stroke-opacity: 0.6; }
+#rolling-plot text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+#rolling-plot .shade { fill: color-mix(in srgb, var(--accent) 14%, transparent); }
+#rolling-plot .overall { stroke: var(--text); stroke-opacity: 0.55; stroke-dasharray: 6 4; }
+#rolling-plot .overall-label { fill: var(--text); fill-opacity: 0.7; }
+#rolling-plot .series { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+#rolling-plot .dot { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5; }
+#rolling-plot .missing { fill: var(--surface); stroke-width: 1.5; }
+#rolling-plot .missing.unavailable { stroke: var(--warn); }
+#rolling-plot .missing.error { stroke: var(--danger); }
+#rolling-plot .active { r: 5; }
+#rolling-plot .legend { font-size: 0.85rem; margin-top: 4px; font-variant-numeric: tabular-nums; min-height: 1.5em; }
+#rolling-plot .help { font-size: 0.8rem; margin: 6px 0 0; }
 #spectrogram-plot { margin: 16px 0 0; }
 #spectrogram-plot figcaption { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
 #spectrogram-plot canvas { display: block; width: 100%; height: auto; touch-action: none; }

@@ -164,9 +164,26 @@
             <div class="param">
               <label><input type="checkbox" id="metric-spectrogram" /> Spectrograms (source and output)</label>
             </div>
+            <div class="param" id="rolling-controls">
+              <label><input type="checkbox" id="metric-rolling" checked /> Speaker similarity over time</label>
+              <div class="row rolling-settings">
+                <select id="rolling-preset" aria-label="Window and hop preset">
+                  <option value="2/1">Fast updates · 2 s window / 1 s hop</option>
+                  <option value="4/2" selected>Balanced · 4 s window / 2 s hop</option>
+                  <option value="6/2">Stable · 6 s window / 2 s hop</option>
+                  <option value="custom">Custom…</option>
+                </select>
+                <span id="rolling-custom" class="row" hidden>
+                  <label class="inline">Window <input type="number" id="rolling-window" min="0.1" max="30" step="0.5" value="4" /> s</label>
+                  <label class="inline">Hop <input type="number" id="rolling-hop" min="0.1" max="30" step="0.5" value="2" /> s</label>
+                </span>
+              </div>
+              <p class="help" id="rolling-help">Uses the speaker encoder above, on successive windows of source and output.</p>
+            </div>
             <button type="button" class="secondary" id="compute-metrics">Compute metrics</button>
             <p class="status" id="metrics-status" role="status"></p>
             <dl class="stats" id="metrics-results"></dl>
+            <figure id="rolling-plot" hidden></figure>
             <figure id="f0-plot" hidden></figure>
             <figure id="spectrogram-plot" hidden></figure>
           </details>

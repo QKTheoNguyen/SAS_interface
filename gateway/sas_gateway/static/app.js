@@ -587,6 +587,7 @@ function showResult({ original, output, model, meta, offsetS = 0 }) {
   // offsetS: how much later the output is than the source (stream recordings: the model delay).
   state.lastResult = { original, output, task: state.task, mode: state.mode, offsetS };
   $("metrics-results").replaceChildren();
+  $("rolling-plot").hidden = true;
   $("f0-plot").hidden = true;
   $("spectrogram-plot").hidden = true;
   $("metrics-status").textContent = "";
@@ -635,12 +636,55 @@ async function refreshMetricOptions() {
   updateMetricsButton();
 }
 
+// Speaker similarity over time: window/hop limits mirrored from workers/common/sas_worker/metrics.py.
+const ROLLING_SAMPLE_RATE = 16000;
+const ROLLING_MAX_WINDOW_S = { CosyVoiceCAMPPlusSpeakerEncoder: 10 };
+
+/** {on, window, hop, error}: `on` only when the box is ticked and a speaker encoder is picked. */
+function rollingSettings() {
+  const encoder = $("metric-speaker").value;
+  const on = !!encoder && $("metric-rolling").checked;
+  const preset = $("rolling-preset").value;
+  const [win, hop] = preset === "custom" ? [Number($("rolling-window").value), Number($("rolling-hop").value)] : preset.split("/").map(Number);
+  let error = "";
+  const wholeSamples = (s) => Math.abs(s * ROLLING_SAMPLE_RATE - Math.round(s * ROLLING_SAMPLE_RATE)) < 1e-6;
+  if (!(win > 0) || !(hop > 0)) error = "Window and hop must be greater than 0 s.";
+  else if (hop > win) error = "Hop must not be longer than the window.";
+  else if (!wholeSamples(win) || !wholeSamples(hop)) error = `Window and hop must be whole samples at ${ROLLING_SAMPLE_RATE / 1000} kHz.`;
+  else if (win > (ROLLING_MAX_WINDOW_S[encoder] ?? Infinity)) error = `This encoder supports windows up to ${ROLLING_MAX_WINDOW_S[encoder]} s.`;
+  return { on, window: win, hop, error };
+}
+
+function updateRollingControls() {
+  const hasEncoder = !!$("metric-speaker").value;
+  $("metric-rolling").disabled = !hasEncoder;
+  $("rolling-custom").hidden = $("rolling-preset").value !== "custom";
+  $("rolling-preset").disabled = !hasEncoder || !$("metric-rolling").checked;
+  const { on, error } = rollingSettings();
+  const help = $("rolling-help");
+  help.className = on && error ? "help warning" : "help";
+  help.textContent = !hasEncoder
+    ? "Pick a speaker encoder to plot speaker similarity over time."
+    : on && error
+      ? error
+      : "Uses the speaker encoder above, on successive windows of source and output.";
+}
+
 function updateMetricsButton() {
+  updateRollingControls();
+  const rolling = rollingSettings();
   const chosen =
     $("metric-speaker").value || $("metric-ser").value || $("metric-f0").value || $("metric-mos").value || $("metric-spectrogram").checked;
+  const invalid = rolling.on && rolling.error;
   // Metrics need a finished result: a live stream must be stopped first.
-  $("compute-metrics").disabled = !state.lastResult || !!state.stream || !chosen;
-  $("compute-metrics").title = state.stream ? "Stop the stream first" : chosen ? "" : "Pick at least one model or the spectrograms";
+  $("compute-metrics").disabled = !state.lastResult || !!state.stream || !chosen || !!invalid;
+  $("compute-metrics").title = state.stream
+    ? "Stop the stream first"
+    : !chosen
+      ? "Pick at least one model or the spectrograms"
+      : invalid
+        ? rolling.error
+        : "";
 }
 
 function metricTile(label, value, sub, headline) {
@@ -664,6 +708,13 @@ async function computeMetrics() {
   form.append("f0_tracker", $("metric-f0").value);
   form.append("mos_model", $("metric-mos").value);
   form.append("spectrogram", $("metric-spectrogram").checked);
+  const rolling = rollingSettings();
+  form.append("rolling", rolling.on);
+  if (rolling.on) {
+    form.append("rolling_window_s", rolling.window);
+    form.append("rolling_hop_s", rolling.hop);
+    form.append("offset_s", state.lastResult.offsetS || 0);
+  }
   status.className = "status";
   status.textContent = "Computing…";
   $("compute-metrics").disabled = true;
@@ -690,6 +741,8 @@ async function computeMetrics() {
       tiles.push(tile);
     }
     $("metrics-results").replaceChildren(...tiles);
+    $("rolling-plot").hidden = !r.speaker_similarity_over_time;
+    if (r.speaker_similarity_over_time) renderRollingPlot($("rolling-plot"), r.speaker_similarity_over_time, r.speaker_similarity);
     $("f0-plot").hidden = !r.f0;
     if (r.f0) renderF0Plot($("f0-plot"), r.f0);
     $("spectrogram-plot").hidden = !r.spectrogram;
@@ -975,6 +1028,137 @@ function nearestFrame(times, t) {
     else hi = mid;
   }
   return Math.abs(times[hi] - t) < Math.abs(times[lo] - t) ? hi : lo;
+}
+
+/**
+ * Speaker similarity over time (quick-convert RollingSpeakerSimilarity, one point per window).
+ * `rolling`: the `speaker_similarity_over_time` response of /api/metrics/compute.
+ * `overall`: the full-recording `speaker_similarity`, drawn as a dashed reference, never derived
+ * from the windows. Windows without a score (unavailable / error) break the line and are drawn as
+ * hollow markers in a separate "n/a" band below the axis, so they never read as a value.
+ */
+function renderRollingPlot(figure, rolling, overall) {
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, text) => {
+    const node = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const div = (className, textContent = "") => Object.assign(document.createElement("div"), { className, textContent });
+  const ms = (v) => `${Math.round(v)} ms`;
+  // Results may come back in any order; plot by window index.
+  const windows = [...rolling.windows].sort((a, b) => a.window_index - b.window_index);
+  const { ok, unavailable, error } = rolling.counts;
+
+  const caption = Object.assign(document.createElement("figcaption"), { textContent: "Speaker similarity over time" });
+  const delay = rolling.offset_s ? ` · output delay ${ms(rolling.offset_s * 1000)} compensated` : "";
+  const meta = div(
+    "rolling-meta muted",
+    `${rolling.model} · window ${rolling.window_s} s / hop ${rolling.hop_s} s${delay} · ` +
+      `${ok} scored, ${unavailable} unavailable, ${error} failed` +
+      (rolling.mean_compute_ms !== null ? ` · ${ms(rolling.mean_compute_ms)} per window` : ""),
+  );
+  const explain = div(
+    "help muted",
+    "Cosine similarity between the speaker embeddings of the same time window in the source and the output " +
+      "(−1 to 1; lower = the voice changed more). It is not an EER, a linkability score or a privacy percentage. " +
+      "Silence, short windows and misalignment make single windows less reliable. The overall score is computed " +
+      "on the full recordings, not averaged from these windows.",
+  );
+  const parts = [caption, meta];
+  if (rolling.note) parts.push(div("notice", rolling.note));
+  if (windows.length === 0) {
+    figure.replaceChildren(...parts, explain);
+    return;
+  }
+
+  const W = 640, H = 250, L = 44, R = 10, T = 10, B = 28, NA = 20;
+  const plotBottom = H - B - NA; // y = -1
+  const naY = H - B - NA / 2; // band for windows without a score
+  const tMax = Math.max(rolling.source_seconds, windows.at(-1).window_end_seconds, 0.01);
+  const x = (t) => L + (t / tMax) * (W - L - R);
+  const y = (v) => T + ((1 - v) / 2) * (plotBottom - T);
+
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `Speaker similarity over time (${rolling.model})` });
+  for (const v of [-1, -0.5, 0, 0.5, 1]) {
+    svg.append(el("line", { class: v === 0 ? "zero" : "grid", x1: L, x2: W - R, y1: y(v), y2: y(v) }));
+    svg.append(el("text", { x: L - 6, y: y(v) + 4, "text-anchor": "end" }, String(v)));
+  }
+  for (const v of niceTicks(0, tMax, 6)) {
+    svg.append(el("text", { x: x(v), y: H - B + 16, "text-anchor": "middle" }, `${v}`));
+  }
+  svg.append(el("text", { x: W - R, y: H - 4, "text-anchor": "end" }, "time (s), point at window end"));
+  svg.append(el("line", { class: "axis", x1: L, x2: W - R, y1: H - B, y2: H - B }));
+  if (ok < windows.length) svg.append(el("text", { x: L - 6, y: naY + 4, "text-anchor": "end" }, "n/a"));
+
+  const shade = el("rect", { class: "shade", y: T, height: H - B - T, visibility: "hidden" });
+  svg.append(shade);
+
+  if (overall) {
+    svg.append(el("line", { class: "overall", x1: L, x2: W - R, y1: y(overall.value), y2: y(overall.value) }));
+    const above = overall.value < 0.85;
+    svg.append(
+      el("text", { class: "overall-label", x: W - R - 2, y: y(overall.value) + (above ? -5 : 13), "text-anchor": "end" },
+        `overall (full recording) ${overall.value.toFixed(3)}`),
+    );
+  }
+
+  let d = "";
+  let pen = false;
+  for (const w of windows) {
+    if (w.status !== "ok") {
+      pen = false;
+      continue;
+    }
+    d += `${pen ? "L" : "M"}${x(w.window_end_seconds).toFixed(1)} ${y(w.speaker_similarity).toFixed(1)}`;
+    pen = true;
+  }
+  svg.append(el("path", { class: "series", d }));
+  const markers = windows.map((w) => {
+    const marker =
+      w.status === "ok"
+        ? el("circle", { class: "dot", cx: x(w.window_end_seconds), cy: y(w.speaker_similarity), r: 3 })
+        : el("circle", { class: `missing ${w.status}`, cx: x(w.window_end_seconds), cy: naY, r: 3.5 });
+    svg.append(marker);
+    return marker;
+  });
+
+  // Hover: shade the hovered window's span, read its values out under the plot.
+  const readout = div("legend");
+  const idle = "Hover the plot to inspect a window.";
+  readout.textContent = idle;
+  let active = null;
+  const clear = () => {
+    shade.setAttribute("visibility", "hidden");
+    active?.classList.remove("active");
+    active = null;
+    readout.textContent = idle;
+  };
+  svg.addEventListener("pointermove", (event) => {
+    const box = svg.getBoundingClientRect();
+    const t = ((((event.clientX - box.left) / box.width) * W - L) / (W - L - R)) * tMax;
+    if (t < 0 || t > tMax) return clear();
+    let i = 0;
+    windows.forEach((w, j) => {
+      if (Math.abs(w.window_end_seconds - t) < Math.abs(windows[i].window_end_seconds - t)) i = j;
+    });
+    const w = windows[i];
+    shade.setAttribute("x", x(w.window_start_seconds));
+    shade.setAttribute("width", x(w.window_end_seconds) - x(w.window_start_seconds));
+    shade.setAttribute("visibility", "visible");
+    active?.classList.remove("active");
+    active = markers[i];
+    active.classList.add("active");
+    const span = `Window ${w.window_index + 1}: ${w.window_start_seconds.toFixed(1)}–${w.window_end_seconds.toFixed(1)} s`;
+    readout.textContent =
+      w.status === "ok"
+        ? `${span} · similarity ${w.speaker_similarity.toFixed(3)} · computed in ${ms(w.compute_time_ms)}`
+        : `${span} · ${w.status === "error" ? "failed" : "unavailable"}: ${w.error_message || "no score"}`;
+  });
+  svg.addEventListener("pointerleave", clear);
+
+  figure.replaceChildren(...parts, svg, readout, explain);
 }
 
 /**
@@ -1421,6 +1605,8 @@ async function init() {
     $(id).addEventListener("change", () => (($(id).dataset.touched = "1"), updateMetricsButton()));
   }
   $("metric-spectrogram").addEventListener("change", updateMetricsButton);
+  for (const id of ["metric-rolling", "rolling-preset"]) $(id).addEventListener("change", updateMetricsButton);
+  for (const id of ["rolling-window", "rolling-hop"]) $(id).addEventListener("input", updateMetricsButton);
   $("compute-metrics").addEventListener("click", computeMetrics);
   for (const id of ["pii-asr", "pii-detector"]) $(id).addEventListener("change", updatePiiButton);
   $("pii-padding-range").addEventListener("input", () => ($("pii-padding").value = $("pii-padding-range").value));

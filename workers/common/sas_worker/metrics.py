@@ -6,6 +6,9 @@
 - F0 contours of both signals, for the panel's overlay plot.
 - Naturalness MOS of both signals (UTMOS, not in quick-convert: loaded via torch.hub).
 - Spectrograms of both signals, for the panel's heatmaps.
+- Speaker similarity over time: per-window cosine from quick-convert's
+  ``RollingSpeakerSimilarity`` (quick_convert/components/metrics/streaming_speaker.py),
+  kept separate from the full-recording score above.
 
 The encoders, SER models and F0 trackers are discovered from quick-convert, so a new
 ``SpeakerEncoder`` exported by ``quick_convert.components.encoders.speaker``,
@@ -22,6 +25,7 @@ import base64
 import importlib
 import inspect
 import logging
+import math
 import pkgutil
 import tempfile
 import time
@@ -29,6 +33,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from fractions import Fraction
 from types import SimpleNamespace
 from typing import Any
 
@@ -67,6 +72,16 @@ SPEC_HOP = 160  # 10 ms
 SPEC_FMAX = 5000
 SPEC_RANGE_DB = 70
 SPEC_MAX_FRAMES = 1500  # longer clips are average-pooled in time to keep the payload small
+
+# Speaker similarity over time. The rolling evaluator needs a constant-offset alignment
+# (output sample 0 = source time -offset_s). Outputs whose length fits neither "same length as
+# the source" (stream recordings: the delayed tail is cut) nor "source + delay" by more than
+# this tolerance are treated as unaligned and every window is reported unavailable.
+ROLLING_ALIGN_TOLERANCE_S = 0.1
+ROLLING_ALIGN_TOLERANCE_REL = 0.02
+# CAMPPlus randomly crops inputs longer than 10 s (see quick-convert's
+# scripts/evaluate_streaming_speaker_similarity.py), so longer windows are refused.
+ROLLING_MAX_WINDOW_S = {"CosyVoiceCAMPPlusSpeakerEncoder": 10.0}
 
 
 class WorldDioF0Extractor:
@@ -213,6 +228,104 @@ def speaker_embedding(encoder: Any, wav: torch.Tensor) -> torch.Tensor:
     return encoder.encode(wav, encoder.sample_rate).values.float().reshape(-1).cpu()
 
 
+def validate_rolling(encoder_id: str, window_s: float, hop_s: float, offset_s: float) -> None:
+    """Raise ValueError with a user-facing message for an unusable window/hop/offset."""
+    if not all(math.isfinite(v) for v in (window_s, hop_s, offset_s)):
+        raise ValueError("Window, hop and offset must be finite numbers.")
+    if window_s <= 0 or hop_s <= 0:
+        raise ValueError("Window and hop must be greater than 0 s.")
+    if hop_s > window_s:
+        raise ValueError("Hop must not be longer than the window.")
+    for value in (window_s, hop_s):
+        if (Fraction(str(value)) * SAMPLE_RATE).denominator != 1:
+            raise ValueError(f"{value} s is not a whole number of samples at {SAMPLE_RATE} Hz.")
+    limit = ROLLING_MAX_WINDOW_S.get(encoder_id)
+    if limit is not None and window_s > limit:
+        raise ValueError(f"{LABELS.get(encoder_id, encoder_id)} supports windows up to {limit:g} s.")
+
+
+def time_aligned(source_s: float, output_s: float, offset_s: float) -> bool:
+    """True when the output length is consistent with a constant offset of ``offset_s``:
+    either the whole delayed source is there (source + offset) or the delayed tail was cut
+    at the source length (stream recordings)."""
+    tolerance = max(ROLLING_ALIGN_TOLERANCE_S, ROLLING_ALIGN_TOLERANCE_REL * source_s)
+    return abs(output_s - source_s) <= tolerance or abs(output_s - (source_s + offset_s)) <= tolerance
+
+
+def rolling_speaker_similarity(
+    encoder: Any,
+    encoder_id: str,
+    src: torch.Tensor,
+    out: torch.Tensor,
+    window_s: float,
+    hop_s: float,
+    offset_s: float = 0.0,
+) -> dict:
+    """Speaker similarity over time with quick-convert's ``RollingSpeakerSimilarity``.
+
+    ``src`` and ``out`` are ``[1, T]`` at SAMPLE_RATE; the output is ``offset_s`` later than the
+    source (model delay of a stream recording, 0 otherwise). Runs synchronously: call it from the
+    model thread, which owns the encoder. Windows that cannot be scored come back with
+    ``speaker_similarity: None`` and a status of ``unavailable`` or ``error``, never a made-up value.
+    """
+    from quick_convert.components.metrics.streaming_speaker import RollingSpeakerSimilarity
+
+    validate_rolling(encoder_id, window_s, hop_s, offset_s)
+    src, out = src.reshape(-1), out.reshape(-1)
+    source_s, output_s = src.numel() / SAMPLE_RATE, out.numel() / SAMPLE_RATE
+    aligned = time_aligned(source_s, output_s, offset_s)
+    start = time.perf_counter()
+    core = RollingSpeakerSimilarity(
+        encoder,
+        SAMPLE_RATE,
+        SAMPLE_RATE,
+        session_id="post-conversion",
+        window_seconds=window_s,
+        hop_seconds=hop_s,
+        aligned=aligned,
+        output_start_seconds=-offset_s,
+        # Whole recordings are added at once: the buffers must hold them entirely,
+        # or the evaluator keeps only the tail and reports the early windows unavailable.
+        max_buffer_seconds=max(source_s, output_s, window_s) + 1.0,
+    )
+    try:
+        core.add_original(src)
+        core.add_anonymized(out)
+        core.finish()
+        windows = [r.to_dict() for r in core.poll()]
+    finally:
+        core.close()
+    ok = [w for w in windows if w["status"] == "ok"]
+    if source_s < window_s:
+        note = f"Recording is {source_s:.1f} s, shorter than the {window_s:g} s window: no window to score."
+    elif not aligned:
+        note = (
+            f"Alignment unverified: the output is {output_s:.2f} s for a {source_s:.2f} s source"
+            f"{f' with a {offset_s * 1000:.0f} ms delay' if offset_s else ''}. This model may not keep "
+            "the source timing, so no window was scored."
+        )
+    else:
+        note = None
+    return {
+        "model": LABELS.get(encoder_id, encoder_id),
+        "window_s": window_s,
+        "hop_s": hop_s,
+        "offset_s": offset_s,
+        "aligned": aligned,
+        "note": note,
+        "source_seconds": source_s,
+        "output_seconds": output_s,
+        "windows": windows,
+        "counts": {
+            "ok": len(ok),
+            "unavailable": sum(w["status"] == "unavailable" for w in windows),
+            "error": sum(w["status"] == "error" for w in windows),
+        },
+        "mean_compute_ms": sum(w["compute_time_ms"] for w in ok) / len(ok) if ok else None,
+        "seconds": time.perf_counter() - start,
+    }
+
+
 def emotion_vector(ser: Any, wav: torch.Tensor) -> np.ndarray:
     """SERSystem.get_labels takes samples with a ``path`` (quick-convert dataset contract)."""
     with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
@@ -345,11 +458,22 @@ def create_metrics_app(device: torch.device) -> FastAPI:
         f0_tracker: str = Form(""),
         mos_model: str = Form(""),
         spectrogram: bool = Form(False),
+        rolling: bool = Form(False),
+        rolling_window_s: float = Form(4.0),
+        rolling_hop_s: float = Form(2.0),
+        offset_s: float = Form(0.0),
     ) -> dict:
         encoder = ready(speaker_encoder, "speaker") if speaker_encoder else None
         ser = ready(ser_model, "ser") if ser_model else None
         tracker = ready(f0_tracker, "f0") if f0_tracker else None
         mos = ready(mos_model, "mos") if mos_model else None
+        if rolling:
+            if encoder is None:
+                raise HTTPException(400, "Speaker similarity over time needs a speaker encoder.")
+            try:
+                validate_rolling(encoder.id, rolling_window_s, rolling_hop_s, offset_s)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
         try:
             src = read_wav(await source.read(), SAMPLE_RATE)
             out = read_wav(await output.read(), SAMPLE_RATE)
@@ -365,6 +489,11 @@ def create_metrics_app(device: torch.device) -> FastAPI:
                     "value": float(F.cosine_similarity(a, b, dim=-1)),
                     "model": LABELS.get(encoder.id, encoder.id),
                 }
+            if encoder and rolling:
+                # Separate from the full-recording score above, never averaged into it.
+                result["speaker_similarity_over_time"] = rolling_speaker_similarity(
+                    encoder.obj, encoder.id, src, out, rolling_window_s, rolling_hop_s, offset_s
+                )
             if ser:
                 a, b = emotion_vector(ser.obj, src), emotion_vector(ser.obj, out)
                 result["emotion_distance"] = {

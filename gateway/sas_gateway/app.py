@@ -250,6 +250,10 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
         f0_tracker: str = Form(""),
         mos_model: str = Form(""),
         spectrogram: bool = Form(False),
+        rolling: bool = Form(False),
+        rolling_window_s: float = Form(4.0),
+        rolling_hop_s: float = Form(2.0),
+        offset_s: float = Form(0.0),
     ) -> Response:
         url = metrics_url()
         files = [
@@ -265,6 +269,10 @@ def create_app(config: Config | None = None, on_ready: Callable[[], None] | None
                     "f0_tracker": f0_tracker,
                     "mos_model": mos_model,
                     "spectrogram": str(spectrogram).lower(),
+                    "rolling": str(rolling).lower(),
+                    "rolling_window_s": str(rolling_window_s),
+                    "rolling_hop_s": str(rolling_hop_s),
+                    "offset_s": str(offset_s),
                 },
                 files=files,
                 timeout=CONVERT_TIMEOUT,
