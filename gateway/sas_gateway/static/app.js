@@ -2,6 +2,10 @@ import { fileToWav, formatSeconds, startRecording } from "./audio.js";
 import { LiveStream } from "./stream.js";
 
 const $ = (id) => document.getElementById(id);
+// Kept by reference: this block moves between the target card and the settings' voice picker,
+// and is briefly detached from the page while the settings re-render.
+const targetsBlock = $("targets-block");
+const targetsBox = $("targets");
 
 const TASK_LABELS = { anonymization: "anonymization", voice_conversion: "voice conversion" };
 
@@ -14,6 +18,7 @@ const state = {
   shownStatus: null, // status of the selected model when its settings were last rendered
   source: null, // {blob, duration, name}
   targets: [], // [{input, value}]
+  voiceSource: "speaker", // "speaker" | "own": voice picker of models with an optional own reference voice
   params: {},
   choicesCache: {},
   streamSource: "mic", // "mic" | "file"
@@ -419,7 +424,13 @@ async function renderParam(model, param) {
     wrap.append(select);
   } else if (param.type === "speaker_map") {
     label.removeAttribute("for");
-    wrap.append(await createSpeakerMap(model, param, value, update));
+    const map = await createSpeakerMap(model, param, value, update);
+    if (ownVoiceInSettings(model)) {
+      label.textContent = "Reference voice";
+      wrap.append(voiceSourcePicker(model, map, param.help));
+      return wrap;
+    }
+    wrap.append(map);
   } else if (param.type === "float" || param.type === "int") {
     const box = document.createElement("div");
     box.className = "range";
@@ -444,6 +455,53 @@ async function renderParam(model, param) {
     wrap.append(help);
   }
   return wrap;
+}
+
+/** An optional own reference voice next to a pseudo-speaker map: both are offered in Settings
+ *  as "Select speaker" / "Use own reference" instead of a separate target-voice card. */
+function ownVoiceInSettings(model) {
+  const spec = model?.tasks[state.task];
+  return (
+    spec?.target_voice === "optional" &&
+    (spec.params || []).some((p) => p.type === "speaker_map" && (!p.modes || p.modes.includes(state.mode)))
+  );
+}
+
+function voiceSourcePicker(model, map, mapHelp) {
+  const helpDiv = (text) => Object.assign(document.createElement("div"), { className: "help", textContent: text || "" });
+  const root = document.createElement("div");
+  root.className = "voice-source";
+  const toggle = document.createElement("div");
+  toggle.className = "segmented";
+  const speakerPane = document.createElement("div");
+  speakerPane.append(map, helpDiv(mapHelp));
+  const ownPane = document.createElement("div");
+  ownPane.append(helpDiv(model.tasks[state.task].target_voice_help), targetsBlock);
+  const show = () => {
+    speakerPane.hidden = state.voiceSource !== "speaker";
+    ownPane.hidden = state.voiceSource !== "own";
+    // Show an empty clip right away (record or upload).
+    if (state.voiceSource === "own" && !state.targets.length) addTarget();
+    updateRunButton();
+  };
+  for (const [value, text] of [["speaker", "Select speaker"], ["own", "Use own reference"]]) {
+    const input = Object.assign(document.createElement("input"), {
+      type: "radio", name: "voice-source", value, checked: state.voiceSource === value,
+    });
+    input.addEventListener("change", () => ((state.voiceSource = value), show()));
+    const lab = document.createElement("label");
+    lab.append(input, text);
+    toggle.append(lab);
+  }
+  root.append(toggle, speakerPane, ownPane);
+  show();
+  return root;
+}
+
+/** Target clips sent with a run: none while "Select speaker" is picked, so they cannot override it. */
+function activeTargets() {
+  if (ownVoiceInSettings(selectedModel()) && state.voiceSource !== "own") return [];
+  return state.targets.filter((t) => t.input.value).map((t) => t.input.value.blob);
 }
 
 function selectedPreset() {
@@ -497,12 +555,14 @@ async function renderSettings({ keepParams = false, preset, apply } = {}) {
   if (live) refreshPiiOptions();
 
   const targetVoice = spec.target_voice || "none";
-  $("target-card").hidden = targetVoice === "none";
+  const inSettings = ownVoiceInSettings(m);
+  if (!inSettings) $("target-card").append(targetsBlock); // back home after a model with the voice picker
+  $("target-card").hidden = targetVoice === "none" || inSettings;
   $("target-required").textContent = targetVoice === "required" ? "(required)" : "(optional)";
   $("target-title").textContent = spec.target_voice_label || "Target voice";
   $("target-help").textContent = spec.target_voice_help || "";
   // Show an empty clip right away (record or upload), also when the voice is optional.
-  if (targetVoice !== "none" && !state.targets.length) addTarget();
+  if (targetVoice !== "none" && !inSettings && !state.targets.length) addTarget();
   renumberSteps();
 }
 
@@ -519,7 +579,7 @@ function renumberSteps() {
 // ---------------------------------------------------------------------------
 
 function renderTargets() {
-  const box = $("targets");
+  const box = targetsBox;
   box.replaceChildren(...state.targets.map((t) => t.input.root));
   const spec = selectedModel()?.tasks[state.task];
   const minTotal = spec?.min_total_target_seconds;
@@ -572,6 +632,9 @@ function updateRunButton() {
   if (!streaming && !state.source) blockers.push("add source speech");
   if (streaming && state.streamSource === "file" && !state.streamFile) blockers.push("choose a file");
   if (needsTarget && !hasTarget) blockers.push("add a target voice clip");
+  if (ownVoiceInSettings(m) && state.voiceSource === "own" && !hasTarget) {
+    blockers.push("add a reference clip, or choose Select speaker");
+  }
   $("run").disabled = blockers.length > 0;
   $("run").title = blockers.join(", ");
 }
@@ -687,13 +750,28 @@ function updateMetricsButton() {
         : "";
 }
 
+/** Plot title with a small italic line under it (units, model, settings), styled like the metric tiles. */
+function plotCaption(name, kind) {
+  const caption = Object.assign(document.createElement("figcaption"), { className: "plot-caption" });
+  caption.append(
+    Object.assign(document.createElement("span"), { className: "metric-name", textContent: name }),
+    Object.assign(document.createElement("span"), { className: "metric-kind", textContent: kind }),
+  );
+  return caption;
+}
+
+/** Metric title above its box; a trailing "(…)" in `label` becomes a small italic line under the title. */
 function metricTile(label, value, sub, headline) {
-  const div = document.createElement("div");
-  if (headline) div.append(Object.assign(document.createElement("div"), { className: "headline", textContent: headline }));
-  const dt = Object.assign(document.createElement("dt"), { textContent: label });
-  const dd = Object.assign(document.createElement("dd"), { textContent: value });
-  const small = Object.assign(document.createElement("div"), { className: "sub", textContent: sub });
-  div.append(dt, dd, small);
+  const el = (tag, className, textContent) => Object.assign(document.createElement(tag), { className, textContent });
+  const [, name, kind] = label.match(/^(.*?)\s*(?:\((.*)\))?$/);
+  const div = el("div", "metric");
+  const dt = el("dt", "", "");
+  dt.append(el("span", "metric-name", name));
+  if (kind) dt.append(el("span", "metric-kind", kind));
+  const box = el("dd", "metric-box", "");
+  if (headline) box.append(el("div", "headline", headline));
+  box.append(el("div", "metric-value", value), el("div", "sub", sub));
+  div.append(dt, box);
   div.title = sub;
   return div;
 }
@@ -1051,12 +1129,14 @@ function renderRollingPlot(figure, rolling, overall) {
   const windows = [...rolling.windows].sort((a, b) => a.window_index - b.window_index);
   const { ok, unavailable, error } = rolling.counts;
 
-  const caption = Object.assign(document.createElement("figcaption"), { textContent: "Speaker similarity over time" });
   const delay = rolling.offset_s ? ` · output delay ${ms(rolling.offset_s * 1000)} compensated` : "";
+  const caption = plotCaption(
+    "Speaker similarity over time",
+    `${rolling.model} · window ${rolling.window_s} s / hop ${rolling.hop_s} s${delay}`,
+  );
   const meta = div(
     "rolling-meta muted",
-    `${rolling.model} · window ${rolling.window_s} s / hop ${rolling.hop_s} s${delay} · ` +
-      `${ok} scored, ${unavailable} unavailable, ${error} failed` +
+    `${ok} scored, ${unavailable} unavailable, ${error} failed` +
       (rolling.mean_compute_ms !== null ? ` · ${ms(rolling.mean_compute_ms)} per window` : ""),
   );
   const explain = div(
@@ -1259,7 +1339,7 @@ function renderF0Plot(figure, f0) {
   });
   svg.addEventListener("pointerleave", clear);
 
-  const caption = Object.assign(document.createElement("figcaption"), { textContent: `F0 contour (Hz) · ${f0.model}` });
+  const caption = plotCaption("F0 contour", `Hz · ${f0.model}`);
   // Manual alignment: move the output contour earlier/later (Shift+click for bigger steps).
   const output = series[1];
   const shiftReadout = Object.assign(document.createElement("span"), { className: "muted" });
@@ -1416,9 +1496,10 @@ function renderSpectrograms(figure, spec, f0) {
   };
 
   const { fmax, range_db: rangeDb } = panels[0].spec;
-  const caption = Object.assign(document.createElement("figcaption"), {
-    textContent: `Spectrogram (0–${fmax / 1000} kHz, 25 ms window, ${rangeDb} dB range)${f0 ? ` · F0: ${f0.model}` : ""}`,
-  });
+  const caption = plotCaption(
+    "Spectrogram",
+    `0–${fmax / 1000} kHz, 25 ms window, ${rangeDb} dB range${f0 ? ` · F0: ${f0.model}` : ""}`,
+  );
   figure.replaceChildren(caption, ...panels.flatMap(draw));
 }
 
@@ -1468,7 +1549,7 @@ async function startStream() {
     model: m.name,
     task: state.task,
     params: state.params,
-    targets: state.targets.filter((t) => t.input.value).map((t) => t.input.value.blob),
+    targets: activeTargets(),
     file: state.streamSource === "file" ? state.streamFile : null,
     monitor: $("stream-monitor").checked,
     maxSeconds: state.config.max_stream_seconds,
@@ -1528,7 +1609,7 @@ async function run() {
   form.append("task", state.task);
   form.append("params", JSON.stringify(state.params));
   form.append("source", state.source.blob, "source.wav");
-  state.targets.filter((t) => t.input.value).forEach((t, i) => form.append("targets", t.input.value.blob, `target${i}.wav`));
+  activeTargets().forEach((blob, i) => form.append("targets", blob, `target${i}.wav`));
 
   $("run").disabled = true;
   status.className = "status";

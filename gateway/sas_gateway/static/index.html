@@ -109,8 +109,11 @@
         <section class="card" id="target-card" hidden>
           <h2><span class="step"></span> <span id="target-title">Target voice</span> <span class="muted" id="target-required"></span></h2>
           <p class="help muted" id="target-help"></p>
-          <div id="targets"></div>
-          <button type="button" class="secondary" id="add-target">+ Add clip</button>
+          <!-- Moved into Settings ("Use own reference") for models with an optional voice and a speaker map. -->
+          <div id="targets-block">
+            <div id="targets"></div>
+            <button type="button" class="secondary" id="add-target">+ Add clip</button>
+          </div>
         </section>
 
         <section class="card">
