@@ -378,6 +378,8 @@ async function createSpeakerMap(model, param, value, update) {
       const dot = svgEl("circle", {
         cx: px(s.x), cy: py(s.y), r: s.id === selected ? 8 : 5.5, tabindex: 0, role: "button",
         class: s.id === selected ? "dot selected" : "dot", "aria-label": `${s.id}, ${s.f0_hz} Hz`,
+        // Position on the map, 0..1 (pitch left→right, brightness bottom→top), for skins that colour the dots.
+        style: `--pitch:${((s.x - x0) / (x1 - x0 || 1)).toFixed(3)};--bright:${((s.y - y0) / (y1 - y0 || 1)).toFixed(3)}`,
       });
       dot.append(Object.assign(svgEl("title"), { textContent: `${s.id} · ${s.f0_hz} Hz` }));
       dot.addEventListener("click", () => select(s.id, true));

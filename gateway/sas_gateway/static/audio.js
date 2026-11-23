@@ -72,7 +72,8 @@ export async function startRecording() {
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
   });
   const ctx = new AudioContext();
-  await ctx.audioWorklet.addModule("recorder-worklet.js");
+  // Relative to this module, not the page, so pages in subfolders (/studio/) find it too.
+  await ctx.audioWorklet.addModule(new URL("recorder-worklet.js", import.meta.url));
   const sourceNode = ctx.createMediaStreamSource(stream);
   const recorder = new AudioWorkletNode(ctx, "recorder-processor");
   const chunks = [];

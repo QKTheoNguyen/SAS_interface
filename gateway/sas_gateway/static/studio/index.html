@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAS Interface — Studio</title>
+    <!-- Same app as the classic page (../): same element ids, same app.js. Only layout and styling differ. -->
+    <link rel="stylesheet" href="../style.css" />
+    <link rel="stylesheet" href="studio.css" />
+    <script>
+      // Apply the saved light/dark choice before the first paint (no flash).
+      try {
+        const theme = localStorage.getItem("sas-studio-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <header class="studio-header">
+      <a class="brand" href="./" aria-label="SAS Interface, home">
+        <img class="logo-light" src="../img/PSST_logo_svg.svg" alt="PSST!" />
+        <img class="logo-dark" src="../img/PSST_logo_svg_white.svg" alt="PSST!" />
+      </a>
+      <nav class="studio-nav" aria-label="Site">
+        <div class="mode" role="group" aria-label="Colour mode">
+          <span>mode</span>
+          <button type="button" data-theme-choice="auto">auto</button>
+          <span aria-hidden="true">/</span>
+          <button type="button" data-theme-choice="light">light</button>
+          <span aria-hidden="true">/</span>
+          <button type="button" data-theme-choice="dark">dark</button>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <h1>SAS Interface</h1>
+        <p class="lede">Speaker anonymization and voice conversion test bench.</p>
+      </section>
+
+      <section class="card">
+        <h2><span class="step">1</span> Task</h2>
+        <div class="segmented" id="task">
+          <label><input type="radio" name="task" value="anonymization" checked /> Anonymization</label>
+          <label><input type="radio" name="task" value="voice_conversion" /> Voice conversion</label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2><span class="step">2</span> Mode</h2>
+        <div class="segmented" id="mode">
+          <label><input type="radio" name="mode" value="non-streaming" checked /> Non-streaming</label>
+          <label><input type="radio" name="mode" value="streaming" /> Streaming</label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2><span class="step">3</span> Model</h2>
+        <select id="model-select" hidden></select>
+        <div id="model-info"></div>
+      </section>
+
+      <div id="model-dependent" hidden>
+        <section class="card" id="params-card" hidden>
+          <h2><span class="step"></span> Settings</h2>
+          <div id="params"></div>
+          <details id="advanced" hidden>
+            <summary>Advanced</summary>
+            <div id="advanced-params"></div>
+          </details>
+          <details id="live-pii-panel" class="subpanel" hidden>
+            <summary>Live PII obfuscation <span class="muted" id="live-pii-state">· off</span></summary>
+            <div class="param">
+              <button type="button" class="secondary toggle" id="live-pii-enable" aria-pressed="false">Live obfuscation: off</button>
+              <div class="help" id="live-pii-help"></div>
+            </div>
+            <div class="param">
+              <label for="live-pii-asr">ASR model</label>
+              <select id="live-pii-asr"></select>
+            </div>
+            <div class="param">
+              <label for="live-pii-detector">PII detector</label>
+              <select id="live-pii-detector"></select>
+            </div>
+            <div class="param">
+              <label for="live-pii-mask">Mask</label>
+              <select id="live-pii-mask">
+                <option value="beep">Beep (1 kHz)</option>
+                <option value="silence">Silence</option>
+                <option value="noise">Noise</option>
+              </select>
+            </div>
+            <div class="param">
+              <label for="live-pii-padding">Padding (ms, each side)</label>
+              <div class="range">
+                <input type="range" id="live-pii-padding-range" min="0" max="300" step="10" value="100" />
+                <input type="number" id="live-pii-padding" min="0" max="300" step="10" value="100" />
+              </div>
+            </div>
+            <div class="param">
+              <label for="live-pii-holdback">Holdback (ms)</label>
+              <div class="range">
+                <label class="inline"><input type="checkbox" id="live-pii-holdback-auto" checked /> Auto</label>
+                <input type="range" id="live-pii-holdback-range" min="0" max="3000" step="50" value="1000" disabled />
+                <input type="number" id="live-pii-holdback" min="0" max="3000" step="50" value="1000" disabled />
+              </div>
+              <div class="help">
+                Auto = detector decision latency + padding. Lower adds less delay but PII may be heard before it is masked.
+              </div>
+            </div>
+          </details>
+        </section>
+
+        <section class="card" id="source-card">
+          <h2><span class="step"></span> Source speech</h2>
+          <div id="source-input"></div>
+          <div id="stream-source" hidden>
+            <div class="segmented" id="stream-source-choice">
+              <label><input type="radio" name="stream-source" value="mic" checked /> Microphone (live)</label>
+              <label><input type="radio" name="stream-source" value="file" /> File (played in real time)</label>
+            </div>
+            <p class="row" id="stream-file-row" hidden>
+              <button type="button" class="secondary" id="stream-file-button">Choose file</button>
+              <span class="muted" id="stream-file-name">No file chosen</span>
+              <input type="file" id="stream-file" accept="audio/*" hidden />
+            </p>
+            <p class="row">
+              <label><input type="checkbox" id="stream-monitor" checked /> Play output live</label>
+              <span class="muted">Use headphones with the microphone, or the output feeds back into it.</span>
+            </p>
+          </div>
+        </section>
+
+        <section class="card" id="target-card" hidden>
+          <h2><span class="step"></span> <span id="target-title">Target voice</span> <span class="muted" id="target-required"></span></h2>
+          <p class="help muted" id="target-help"></p>
+          <div id="targets-block">
+            <div id="targets"></div>
+            <button type="button" class="secondary" id="add-target">+ Add clip</button>
+          </div>
+        </section>
+
+        <section class="card run-card">
+          <h2><span class="step"></span> Run</h2>
+          <button type="button" id="run" class="primary">Run</button>
+          <p id="run-status" class="status" role="status"></p>
+        </section>
+
+        <section class="card" id="latency-card" hidden>
+          <h2>Latency</h2>
+          <dl class="stats" id="latency-stats"></dl>
+          <p class="help muted">
+            End-to-end = chunk capture + round trip + playback buffer + model delay + audio device.
+            RTF = compute time / chunk duration; above 1 the model cannot keep up and latency grows.
+          </p>
+        </section>
+
+        <section class="card" id="result-card" hidden>
+          <h2><span class="step"></span> Result</h2>
+          <div class="players">
+            <figure>
+              <figcaption>Original</figcaption>
+              <audio id="original-audio" controls></audio>
+            </figure>
+            <figure>
+              <figcaption>Output</figcaption>
+              <audio id="result-audio" controls></audio>
+            </figure>
+          </div>
+          <p class="row">
+            <a id="download" class="button secondary" download>Download WAV</a>
+            <span id="result-meta" class="muted"></span>
+          </p>
+          <details id="metrics-panel" hidden>
+            <summary>Metrics (source vs. output)</summary>
+            <div class="param">
+              <label for="metric-speaker">Speaker encoder</label>
+              <select id="metric-speaker"></select>
+            </div>
+            <div class="param">
+              <label for="metric-ser">Emotion model (SER)</label>
+              <select id="metric-ser"></select>
+            </div>
+            <div class="param">
+              <label for="metric-f0">F0 tracker</label>
+              <select id="metric-f0"></select>
+            </div>
+            <div class="param">
+              <label for="metric-mos">Quality model (MOS)</label>
+              <select id="metric-mos"></select>
+            </div>
+            <div class="param">
+              <label><input type="checkbox" id="metric-spectrogram" /> Spectrograms (source and output)</label>
+            </div>
+            <div class="param" id="rolling-controls">
+              <label><input type="checkbox" id="metric-rolling" checked /> Speaker similarity over time</label>
+              <div class="row rolling-settings">
+                <select id="rolling-preset" aria-label="Window and hop preset">
+                  <option value="2/1">Fast updates · 2 s window / 1 s hop</option>
+                  <option value="4/2" selected>Balanced · 4 s window / 2 s hop</option>
+                  <option value="6/2">Stable · 6 s window / 2 s hop</option>
+                  <option value="custom">Custom…</option>
+                </select>
+                <span id="rolling-custom" class="row" hidden>
+                  <label class="inline">Window <input type="number" id="rolling-window" min="0.1" max="30" step="0.5" value="4" /> s</label>
+                  <label class="inline">Hop <input type="number" id="rolling-hop" min="0.1" max="30" step="0.5" value="2" /> s</label>
+                </span>
+              </div>
+              <p class="help" id="rolling-help">Uses the speaker encoder above, on successive windows of source and output.</p>
+            </div>
+            <button type="button" class="secondary" id="compute-metrics">Compute metrics</button>
+            <p class="status" id="metrics-status" role="status"></p>
+            <dl class="stats" id="metrics-results"></dl>
+            <figure id="rolling-plot" hidden></figure>
+            <figure id="f0-plot" hidden></figure>
+            <figure id="spectrogram-plot" hidden></figure>
+          </details>
+        </section>
+
+        <section class="card" id="pii-card" hidden>
+          <h2><span class="step"></span> Post processing</h2>
+          <p class="help muted">
+            PII obfuscation: ASR and PII detection run on the original speech, then the detected
+            segments are masked in the output (same timing assumed).
+          </p>
+          <div class="param">
+            <label for="pii-asr">ASR model</label>
+            <select id="pii-asr"></select>
+          </div>
+          <div class="param">
+            <label for="pii-detector">PII detector</label>
+            <select id="pii-detector"></select>
+          </div>
+          <div class="param">
+            <label for="pii-mask">Mask</label>
+            <select id="pii-mask">
+              <option value="beep">Beep (1 kHz)</option>
+              <option value="silence">Silence</option>
+              <option value="noise">Noise</option>
+            </select>
+          </div>
+          <div class="param">
+            <label for="pii-padding">Padding (ms, each side)</label>
+            <div class="range">
+              <input type="range" id="pii-padding-range" min="0" max="300" step="10" value="100" />
+              <input type="number" id="pii-padding" min="0" max="300" step="10" value="100" />
+            </div>
+            <div class="help">Extra time masked before and after each detected segment.</div>
+          </div>
+          <button type="button" class="secondary" id="run-pii">Detect &amp; obfuscate</button>
+          <p class="status" id="pii-status" role="status"></p>
+          <div id="pii-live-result" hidden>
+            <figure class="pii-player" id="pii-live-player" hidden>
+              <figcaption>Live-masked output (what the listener heard)</figcaption>
+              <audio id="pii-live-audio" controls></audio>
+            </figure>
+            <p class="row" id="pii-live-row" hidden>
+              <a id="pii-live-download" class="button secondary" download>Download WAV</a>
+              <span id="pii-live-meta" class="muted"></span>
+            </p>
+            <p class="warning" id="pii-live-warning" hidden></p>
+            <p class="transcript" id="pii-live-transcript"></p>
+          </div>
+          <div id="pii-result" hidden>
+            <figure class="pii-player">
+              <figcaption>Obfuscated output</figcaption>
+              <audio id="pii-audio" controls></audio>
+            </figure>
+            <p class="row">
+              <a id="pii-download" class="button secondary" download>Download WAV</a>
+              <span id="pii-meta" class="muted"></span>
+            </p>
+            <p class="warning" id="pii-warning" hidden></p>
+            <p class="transcript" id="pii-transcript"></p>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="studio-footer">
+      <div class="funding">
+        <img class="logo-light" src="../img/EN_FundedbytheEU_RGB_POS.png" alt="Funded by the European Union" />
+        <img class="logo-dark" src="../img/EN_FundedbytheEU_RGB_WHITE.png" alt="Funded by the European Union" />
+      </div>
+      <p class="footer-links">
+        <span>sas interface</span>
+        <a href="../">classic interface ↗</a>
+      </p>
+    </footer>
+
+    <script type="module" src="../app.js"></script>
+    <script type="module" src="studio.js"></script>
+  </body>
+</html>

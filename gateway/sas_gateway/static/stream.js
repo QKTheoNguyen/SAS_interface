@@ -124,7 +124,8 @@ export class LiveStream {
       this.ctx = new AudioContext({ latencyHint: "interactive" });
       source = this.ctx.createMediaStreamSource(this.mic);
     }
-    await this.ctx.audioWorklet.addModule("stream-capture-worklet.js");
+    // Relative to this module, not the page, so pages in subfolders (/studio/) find it too.
+    await this.ctx.audioWorklet.addModule(new URL("stream-capture-worklet.js", import.meta.url));
     this.capture = new AudioWorkletNode(this.ctx, "stream-capture", {
       processorOptions: { targetRate: this.ready.sample_rate, chunkSamples: this.ready.chunk_samples },
     });

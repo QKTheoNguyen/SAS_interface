@@ -1,0 +1,362 @@
+/*
+ * Studio skin for the SAS interface, loaded after ../style.css.
+ * Inspired by studiostudio.be: black on white (or white on black), one large grotesk,
+ * small lowercase monospace labels, 1 px rules instead of cards, square corners,
+ * all in one centred column.
+ * Only tokens and layout change here; the app's own components keep their structure.
+ */
+
+/* ---------------------------------------------------------------- tokens */
+
+:root {
+  --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --gap: 1rem;
+  --column: 820px;
+  --l-font: clamp(1.25rem, 3vw, 1.75rem);
+  --xl-font: clamp(2.5rem, 9vw, 4.5rem);
+
+  /* Tokens of ../style.css, remapped to monochrome. --rule is the strong 1 px line. */
+  --bg: #fff;
+  --surface: #fff;
+  --text: #000;
+  --rule: #000;
+  --muted: #6e6e6e;
+  --border: #cfcfcf;
+  --accent: #000;
+  --accent-text: #fff;
+  --danger: #d1240f;
+  --ok: #1f7a3d;
+  --warn: #9a5b00;
+  --radius: 0;
+  /* Button colour. White text on this green: 5.4:1 contrast. */
+  --green: #0b7a3e;
+  --green-hover: #08602f;
+  --green-text: #fff;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #000;
+    --surface: #000;
+    --text: #fff;
+    --rule: #fff;
+    --muted: #9b9b9b;
+    --border: #3a3a3a;
+    --accent: #fff;
+    --accent-text: #000;
+    --danger: #ff6b5b;
+    --ok: #5cc27a;
+    --warn: #e0a83a;
+    --green: #34d27b;
+    --green-hover: #63e39c;
+    --green-text: #000;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #000;
+  --surface: #000;
+  --text: #fff;
+  --rule: #fff;
+  --muted: #9b9b9b;
+  --border: #3a3a3a;
+  --accent: #fff;
+  --accent-text: #000;
+  --danger: #ff6b5b;
+  --ok: #5cc27a;
+  --warn: #e0a83a;
+  --green: #34d27b;
+  --green-hover: #63e39c;
+  --green-text: #000;
+  color-scheme: dark;
+}
+
+/* Logos: positive version in light mode, white version in dark mode. */
+.logo-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .logo-light { display: none; }
+  :root:not([data-theme="light"]) .logo-dark { display: block; }
+}
+:root[data-theme="dark"] .logo-light { display: none; }
+:root[data-theme="dark"] .logo-dark { display: block; }
+
+/* ---------------------------------------------------------------- base */
+
+body {
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--text);
+}
+
+a { color: var(--text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.muted { color: var(--muted); }
+
+/* ---------------------------------------------------------------- header & footer */
+
+.studio-header,
+.studio-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  flex-wrap: wrap;
+  padding: var(--gap);
+}
+
+.studio-header { border-bottom: 1px solid var(--rule); }
+
+.brand img { display: block; height: 120px; width: auto; }
+
+.studio-nav {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  text-transform: lowercase;
+}
+
+.mode { display: inline-flex; align-items: center; gap: 0.4rem; }
+.mode > span:first-child { color: var(--muted); margin-right: 0.3rem; }
+.mode button {
+  font: inherit;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.studio-nav .mode button:hover { color: var(--text); background: none; }
+.mode button[aria-pressed="true"] { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+
+.studio-footer {
+  border-top: 1px solid var(--rule);
+  margin-top: 4rem;
+  align-items: flex-end;
+}
+.funding img { display: block; height: 72px; width: auto; max-width: 100%; }
+.footer-links {
+  display: flex;
+  gap: 2rem;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  text-transform: lowercase;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- page grid */
+
+/* One centred column: header, content and footer share the same width. */
+main,
+.studio-header,
+.studio-footer {
+  box-sizing: border-box;
+  max-width: var(--column);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+main {
+  padding: 0 var(--gap);
+  counter-reset: step;
+}
+
+.hero {
+  padding: 3rem 0 2.5rem;
+}
+.hero h1 {
+  margin: 0;
+  font-size: var(--xl-font);
+  font-weight: normal;
+  line-height: 0.95;
+  letter-spacing: -0.03em;
+}
+.hero .lede {
+  margin: 1rem 0 0;
+  max-width: 28ch;
+  font-size: var(--l-font);
+  line-height: 1.2;
+}
+
+/* Each section: a 1 px rule, its small label, then its content. */
+.card {
+  margin: 0;
+  padding: 1rem 0 2.5rem;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  border-radius: 0;
+}
+.card > h2 {
+  margin: 0 0 1rem;
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  font-weight: normal;
+  text-transform: lowercase;
+}
+
+/* Step numbers 01, 02…: counted by CSS over the visible sections (hidden ones are display: none). */
+.step {
+  counter-increment: step;
+  display: inline;
+  width: auto;
+  height: auto;
+  background: none;
+  color: var(--muted);
+  font-size: 0;
+  border-radius: 0;
+}
+.step::before {
+  content: counter(step, decimal-leading-zero);
+  font-size: 0.9rem;
+  margin-right: 0.75rem;
+}
+
+@media (max-width: 560px) {
+  .brand img { height: 88px; }
+  .funding img { height: 56px; }
+}
+
+/* ---------------------------------------------------------------- controls */
+
+select,
+input[type="number"],
+input[type="text"] {
+  border-radius: 0;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+}
+
+button,
+.button {
+  border-radius: 0;
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  text-transform: lowercase;
+}
+button:not(:disabled):hover,
+.button:hover {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--green-text);
+  text-decoration: none;
+}
+
+button.primary {
+  background: var(--green);
+  color: var(--green-text);
+  border-color: var(--green);
+  font-family: var(--sans);
+  font-size: var(--l-font);
+  font-weight: normal;
+  text-transform: none;
+  text-align: left;
+  padding: 0.8rem 1rem;
+}
+button.primary:not(:disabled):hover { background: var(--green-hover); border-color: var(--green-hover); color: var(--green-text); }
+button.toggle.active { background: var(--green); border-color: var(--green); color: var(--green-text); }
+button.recording,
+button.primary.recording:not(:disabled):hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+/* Sliders (track fill and thumb). */
+input[type="range"] { accent-color: var(--green); }
+
+/* Radio groups: square, joined, the selected one filled green. */
+.segmented { gap: 0; }
+.segmented label {
+  border: 1px solid var(--rule);
+  border-radius: 0;
+  font-weight: normal;
+  background: var(--bg);
+}
+.segmented label + label { border-left: 0; }
+.segmented label:hover { border-color: var(--rule); text-decoration: underline; }
+.segmented label:has(input:checked) { background: var(--green); color: var(--green-text); border-color: var(--rule); text-decoration: none; }
+@media (max-width: 480px) {
+  .segmented label + label { border-left: 1px solid var(--rule); border-top: 0; }
+}
+
+.param label { font-weight: normal; }
+.param > label:first-child {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  text-transform: lowercase;
+  color: var(--muted);
+}
+/* Checkbox labels read as sentences, not as field labels. */
+.param > label:first-child:has(input[type="checkbox"]) {
+  font-family: var(--sans);
+  font-size: 1rem;
+  text-transform: none;
+  color: var(--text);
+}
+
+details summary {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  text-transform: lowercase;
+  color: var(--text);
+}
+#metrics-panel,
+#live-pii-panel { border-top: 1px solid var(--rule); }
+
+.badge { border-radius: 0; font-family: var(--mono); text-transform: lowercase; }
+
+/* ---------------------------------------------------------------- results */
+
+.players figcaption,
+.pii-player figcaption {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: normal;
+  text-transform: lowercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.stats > div,
+#metrics-results dd.metric-box { border-radius: 0; border-color: var(--rule); }
+#metrics-results .metric-value,
+.stats dd { font-size: var(--l-font); letter-spacing: -0.01em; }
+
+/* Pseudo-speaker map: full column width. */
+.speaker-map svg {
+  width: 100%;
+  max-width: none;
+  border-radius: 0;
+  border-color: var(--rule);
+}
+/* Dots coloured by position (--pitch, --bright: 0..1, set by app.js):
+   brightness runs from dark red (bottom) to light orange (top); pitch blends in green from left
+   to right, a lighter green for brighter voices and a deeper one for darker voices. */
+.speaker-map .dot {
+  --dot-orange: #ffb26b;
+  --dot-red: #9e1b1b;
+  --dot-green-light: #8fd694;
+  --dot-green-dark: #1f6e3d;
+  --dot-warm: color-mix(in oklab, var(--dot-orange) calc(var(--bright, 0) * 100%), var(--dot-red));
+  --dot-green: color-mix(in oklab, var(--dot-green-light) calc(var(--bright, 0) * 100%), var(--dot-green-dark));
+  --dot-fill: color-mix(in oklab, var(--dot-green) calc(var(--pitch, 0) * 75%), var(--dot-warm));
+  fill: var(--dot-fill);
+  fill-opacity: 0.9;
+  stroke: var(--bg);
+}
+.speaker-map .dot:hover,
+.speaker-map .dot:focus-visible { fill: var(--dot-fill); fill-opacity: 1; stroke: var(--text); }
+.speaker-map .dot.selected { fill: var(--dot-fill); fill-opacity: 1; stroke: var(--text); stroke-width: 2.5; }
+.speaker-map button.active { background: var(--green); border-color: var(--green); color: var(--green-text); }
+
+.transcript mark { border-radius: 0; }

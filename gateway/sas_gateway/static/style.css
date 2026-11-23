@@ -199,6 +199,9 @@ button.recording { border-color: var(--danger); color: var(--danger); }
 #spectrogram-plot canvas { display: block; width: 100%; height: auto; touch-action: none; }
 #spectrogram-plot .spec-head { display: flex; justify-content: space-between; gap: 10px; font-size: 0.85rem; margin-top: 8px; font-variant-numeric: tabular-nums; }
 
+.page-footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--border); text-align: center; font-size: 0.9rem; }
+.page-footer a { color: var(--accent); }
+
 details summary { cursor: pointer; color: var(--muted); margin: 4px 0 8px; }
 
 .clip { border-top: 1px dashed var(--border); padding: 10px 0; }
